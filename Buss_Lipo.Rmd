@@ -6266,7 +6266,7 @@ summary(logitTG)
 
 # Pie charts
 ```{r}
-#please give to lucy
+#please give to lucy 
 load("BUS_SAU_correctedLipo_ann_14022024.rda") 
 names(bus_sau2)
 ```
