@@ -1,0 +1,80 @@
+---
+title: "LucyLipoRatio"
+author: "Lucy Grigoroff"
+date: "2024-03-12"
+output: html_document
+---
+
+# Load Data
+```{r}
+load("~/BUS_SAU_correctedLipo_ann_14022024.rda")
+names(bus_sau2)
+```
+#Data Prep
+```{r}
+abe <- bus_sau2
+abe$L1CE <- abe$L1CH - abe$L1FC
+abe$L2CE <- abe$L2CH - abe$L2FC
+abe$L3CE <- abe$L3CH - abe$L3FC
+abe$L4CE <- abe$L4CH - abe$L4FC
+```
+#Pie Chart Function
+```{r}
+generate_pie_chart <- function(data, variable) {
+  # Filter the data based on the selected variable
+  vars <- grep(pattern = paste0(variable, ".*[^BNH]$"),
+               x = names(data),
+               value = TRUE)
+  df <- data[, c("cohort", "comb", vars)]
+
+  # Pivot the data longer
+  dF <- pivot_longer(data = df, cols = vars)
+
+  # Summarize the data
+  dF <- group_by(dF, cohort, comb, name) %>%
+    summarise(avg = mean(value), .groups = "drop")
+  
+  # Ensure all combinations of 'comb' and 'name' are present with zero values
+  df <- tidyr::complete(dF, comb, name, fill = list(avg = 0))
+
+  # Normalize the 'avg' values within each cohort and comb
+  df <- df %>%
+    group_by(cohort, comb) %>%
+    mutate(normalized_avg = avg / sum(avg))
+
+  # Create the pie chart
+  pie_chart <- ggplot(df, aes(x = "", y = normalized_avg, fill = name)) +
+    geom_bar(stat = "identity", width = 1) +  # Create bars with identity stat and width 1
+    coord_polar(theta = "y") +  # Convert to polar coordinates
+    scale_fill_manual(values = scales::hue_pal()(length(unique(dF$name)))) +  # Use the same colors as the bar chart
+    theme_void() +  # Remove unnecessary elements
+    theme(legend.position = "right", # Position legend theme
+          strip.placement = "outside",
+          strip.text = element_text(size = 12),
+          strip.text.y = element_text(angle = 90),
+          axis.text.y = element_text(hjust = 0),
+          strip.background = element_rect(fill = "white", 
+                                          color = "white"),
+           panel.spacing = unit(0, "lines"))+
+    facet_grid(facets = cohort ~ comb, switch = "y") +
+    geom_text(aes(label = round(avg, digits = 2)), 
+              position = position_stack(vjust = 0.5)) +
+    labs(fill = NULL)
+  
+  return(pie_chart)
+}
+
+
+```
+
+```{r}
+
+pie_chart_L1 <- generate_pie_chart(data = abe, variable = "L1")
+print(pie_chart_L1)
+pie_chart_L2 <- generate_pie_chart(data = abe, variable = "L2")
+print(pie_chart_L2)
+pie_chart_L3 <- generate_pie_chart(data = abe, variable = "L3")
+print(pie_chart_L3)
+pie_chart_L4 <- generate_pie_chart(data = abe, variable = "L4")
+print(pie_chart_L4)
+```
