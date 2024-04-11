@@ -7,7 +7,7 @@ output: html_document
 
 # Load Data
 ```{r}
-load("~/BUS_SAU_correctedLipo_ann_14022024.rda")
+bus_sau2 <- read.csv("~/git/mahideel/lipoRatio/BusT1_Sau_Healthy_DM2_28112023.csv")
 names(bus_sau2)
 ```
 #Data Prep
@@ -18,6 +18,98 @@ abe$L2CE <- abe$L2CH - abe$L2FC
 abe$L3CE <- abe$L3CH - abe$L3FC
 abe$L4CE <- abe$L4CH - abe$L4FC
 ```
+
+#Mauritius loading data
+```{r}
+lipoMeta2 <- read.csv("temp_mauritius_annotation.csv", header = TRUE)
+load("~/OneDrive - Murdoch University/datasets/covid19/mauritius/DataElements/covid19_mauritius_SER_COVr22_LIPO.daE")
+lipoData <- covid19_mauritius_SER_COVr22_LIPO@.Data
+# retrieving the sample annotation
+lipoMeta<-covid19_mauritius_SER_COVr22_LIPO@obsDescr[[1]] 
+
+# creating sourceID column to match with Survey.No column from anno (metadata)
+lipoMeta$sourceID<-as.numeric(sapply(strsplit(lipoMeta$UUID,"_"),"[",2))
+
+# remove LTR
+idx<-which(lipoMeta$sampleType %in% c("sample")) # 254 samples - meaning 18 LTR will be taken out
+lipoData<-lipoData[idx,]
+lipoMeta<-lipoMeta[idx,]
+
+#match 
+idx<-which(lipoMeta2$Survey.No %in% lipoMeta$sourceID) #253
+lipoMeta2<-lipoMeta2[which(lipoMeta2$Survey.No%in% lipoMeta$sourceID),]
+idx<-which(lipoMeta$sourceID %in% lipoMeta2$Survey.No) #253
+lipoMeta<-lipoMeta[idx,]
+lipoData<-lipoData[idx,]
+lipoMeta2<-lipoMeta2[match(lipoMeta$sourceID, lipoMeta2$Survey.No),] #253
+
+#Survey.No == 17 needs the DM status changed to NDM. 
+lipoMeta2$DM[which(lipoMeta2$Survey.No=="17")] ="NDM"
+```
+
+#make it align with the conventions for saudi and busso cohorts
+```{r}
+columns_to_keep <- c( "cohortName", "sampleID")
+columns_to_keep2 <- c("DM", "Gender", "Age", "Systolic1", "Diastolic1", "BMI", "Height1","Waist1", "Weight1", "FBG")
+
+lipoMeta <- cbind(lipoMeta[, columns_to_keep], lipoMeta2[, columns_to_keep2])
+rm(lipoMeta2)
+
+#gender
+lipoMeta$Gender[which(lipoMeta$Gender == "Male")] = "M"
+lipoMeta$Gender[which(lipoMeta$Gender == "Female")] = "F"
+
+#new bmi
+lipoMeta$BMI_cut <- NA
+lipoMeta$BMI_cut[which(lipoMeta$BMI<18.49)] = "Underweight"
+lipoMeta$BMI_cut[which(lipoMeta$BMI >= 18.49 & lipoMeta$BMI < 25)] = "Healthy"
+lipoMeta$BMI_cut[which(lipoMeta$BMI >= 25 & lipoMeta$BMI < 30)] = "Overweight"
+lipoMeta$BMI_cut[which(lipoMeta$BMI >= 30)] = "Obese"
+
+#DM
+lipoMeta$DM[lipoMeta$DM == "NDM"] <- "NO DM"
+lipoMeta$DM[lipoMeta$DM == "DM"] <- "DM2"
+
+#Creating a new column for comb of BMI category and DM
+lipoMeta$comb <- NA
+lipoMeta$comb = gsub("\\s","", paste(lipoMeta$BMI_cut,"_", lipoMeta$DM))
+
+# renaming and adding columns of bus_sau to be consistent with Mauritius
+names(lipoMeta )[names(lipoMeta ) == "Age"] <- "age"
+names(lipoMeta )[names(lipoMeta ) == "BMI"] <- "bmi"
+names(lipoMeta )[names(lipoMeta ) == "Gender"] <- "sex"
+names(lipoMeta )[names(lipoMeta ) == "BMI_cut"] <- "BMI.weight"
+names(lipoMeta )[names(lipoMeta ) == "Systolic1"] <- "sbp"
+names(lipoMeta )[names(lipoMeta ) == "Diastolic1"] <- "dbp"
+names(lipoMeta )[names(lipoMeta ) == "Height1"] <- "height"
+names(lipoMeta )[names(lipoMeta ) == "Weight1"] <- "weight"
+names(lipoMeta )[names(lipoMeta ) == "Waist1"] <- "waist"
+names(lipoMeta )[names(lipoMeta ) == "cohortName"] <- "cohort"
+names(lipoMeta )[names(lipoMeta ) == "FBG"] <- "glucose"
+
+lipoData <- as.data.frame(lipoData)
+lipoData$L1CE <- lipoData$L1CH - lipoData$L1FC
+lipoData$L2CE <- lipoData$L2CH - lipoData$L2FC
+lipoData$L3CE <- lipoData$L3CH - lipoData$L3FC
+lipoData$L4CE <- lipoData$L4CH - lipoData$L4FC
+
+mau <- cbind(lipoData, lipoMeta)
+
+rm(lipoData, lipoMeta)
+```
+
+#add mau to saudi and bus
+```{r}
+cols_abe <- colnames(abe)
+cols_mau <- colnames(mau)
+
+# Reorder the columns of df2 to match the order of columns in df1
+mau <- mau[, cols_abe]
+
+abem <- rbind(abe, mau)
+
+```
+
 #Pie Chart Function
 ```{r}
 generate_pie_chart <- function(data, variable) {
@@ -69,12 +161,12 @@ generate_pie_chart <- function(data, variable) {
 
 ```{r}
 
-pie_chart_L1 <- generate_pie_chart(data = abe, variable = "L1")
-print(pie_chart_L1)
-pie_chart_L2 <- generate_pie_chart(data = abe, variable = "L2")
-print(pie_chart_L2)
-pie_chart_L3 <- generate_pie_chart(data = abe, variable = "L3")
-print(pie_chart_L3)
-pie_chart_L4 <- generate_pie_chart(data = abe, variable = "L4")
-print(pie_chart_L4)
+pie_chart_L1 <- generate_pie_chart(data = abem, variable = "L1")
+pie_chart_L1 + ggtitle("L1")
+pie_chart_L2 <- generate_pie_chart(data = abem, variable = "L2")
+pie_chart_L2 + ggtitle("L2")
+pie_chart_L3 <- generate_pie_chart(data = abem, variable = "L3")
+pie_chart_L3 + ggtitle("L3")
+pie_chart_L4 <- generate_pie_chart(data = abem, variable = "L4")
+pie_chart_L4 + ggtitle("L4")
 ```
