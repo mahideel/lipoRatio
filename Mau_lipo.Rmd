@@ -1,0 +1,260 @@
+---
+title: "Mauritius Lipo"
+author: "nminaee"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# Loading packages 
+```{r setup, echo=FALSE, warning = FALSE, message=FALSE}
+devtools::load_all("~/nmr-spectra-processing/")
+#devtools::install_github("phenological/mva-plots")
+library(fusion)
+library(dplyr)
+library(readr)
+library(reshape2)
+library(ggplot2)
+library(ggrepel)
+library(tibble)
+library(ggpubr)
+library(mva.plots)
+library(caret)
+library(tidyr)
+```
+
+
+# Loading Mauritius data
+```{r echo=FALSE, warning = FALSE, message=FALSE}
+setwd("~/Desktop/Diabetes_Obesity/Busselton")# laptop
+
+# reading in Mauritius metadata (temp anno data from RM (06/03/2024))
+anno <- read.csv("temp_mauritius_annotation.csv", header = TRUE)
+
+# reading in Mauritius Lipo data element
+lipo.daE<-local(get(load("covid19_mauritius_SER_COVr22_LIPO.daE")))
+
+# retrieving the individual lipoprotein data
+lipo <- lipo.daE@.Data
+colnames(lipo) <- lipo.daE@varName
+
+dim(lipo)
+# [1] 272 112
+
+# retrieving the sample annotation
+lipo_an<-lipo.daE@obsDescr[[1]] 
+
+# creating sourceID column to match with Survey.No column from anno (metadata)
+lipo_an$sourceID<-as.numeric(sapply(strsplit(lipo_an$UUID,"_"),"[",2))
+
+# remove LTR
+idx<-which(lipo_an$sampleType %in% c("sample")) # 254 samples - meaning 18 LTR will be taken out
+lipo<-lipo[idx,]
+lipo_an<-lipo_an[idx,]
+
+#save(lipo, lipo_an, file="MAU_lipo.rda")
+```
+
+
+# Matching metadata with lipo data after LTRs are removed 
+```{r echo=FALSE, warning = FALSE, message=FALSE}
+idx<-which(anno$Survey.No %in% lipo_an$sourceID) #253
+anno<-anno[which(anno$Survey.No%in% lipo_an$sourceID),]
+idx<-which(lipo_an$sourceID %in% anno$Survey.No) #253
+lipo_an<-lipo_an[idx,]
+lipo<-lipo[idx,]
+anno<-anno[match(lipo_an$sourceID, anno$Survey.No),] #253
+
+#save(anno, file="MAU_metadata.rda")
+```
+
+
+# Checking NAs in DM column
+```{r}
+#Survey.No == 17 needs the DM status changed to NDM. 
+anno$DM[which(anno$Survey.No=="17")] ="NDM"
+```
+
+# Selecting relevant columns from metadata & bind to lipo data 
+```{r}
+# remember Survey.No == sourceID
+annoToBind <- anno %>% select(Survey.No, Med_T2DM, Med_T1DM, DM, Gender, Age, BMI)
+lipoMeta <- cbind(lipo, annoToBind)
+```
+
+# Creating a new column to identify those with DM + take med and DM + no med. 
+```{r}
+lipoMeta$Med =""
+lipoMeta$Med[which(lipoMeta$DM == "DM" & lipoMeta$Med_T2DM == "No" & lipoMeta$Med_T1DM == "No")] = "DM_NoMed"
+lipoMeta$Med[which(lipoMeta$DM == "DM" & lipoMeta$Med_T2DM == "YES" & lipoMeta$Med_T1DM == "No")] = "DM2_Med"
+lipoMeta$Med[which(lipoMeta$DM == "DM" & lipoMeta$Med_T2DM == "No" & lipoMeta$Med_T1DM == "YES")] = "DM1_Med"
+lipoMeta$Med[which(lipoMeta$DM == "DM" & lipoMeta$Med_T2DM == "YES" & lipoMeta$Med_T1DM == "YES")] = "DM1_2_Med"
+lipoMeta$Med[which(lipoMeta$DM == "NDM" & lipoMeta$Med_T2DM == "No" & lipoMeta$Med_T1DM == "No")] = "NDM"
+lipoMeta$Med[which(lipoMeta$DM == "NDM" & lipoMeta$Med_T2DM == "YES" & lipoMeta$Med_T1DM == "No")] = "NDM_Med_DM2" # for checking only - just in case
+lipoMeta$Med[which(lipoMeta$DM == "NDM" & lipoMeta$Med_T2DM == "No" & lipoMeta$Med_T1DM == "YES")] = "NDM_Med_DM1" # for checking only - just in case
+lipoMeta$Med[which(lipoMeta$DM == "NDM" & lipoMeta$Med_T2DM == "YES" & lipoMeta$Med_T1DM == "YES")] = "NDM_Med_DM1_2" # for checking only - just in case
+
+
+table(lipoMeta$Med)
+ # DM_NoMed DM1_2_Med   DM2_Med       NDM 
+ #       51        30        65       107
+```
+
+NOTE: (confirmed with RM 06/03/2024)
+- Mauritius cohort did not specify if they have T1DM or T2DM. 
+- DM_NoMed most likely is T2DM. 
+
+
+# Creating a new column for BMI category
+```{r}
+lipoMeta$BMI_cut =""
+lipoMeta$BMI_cut[which(lipoMeta$BMI<18.49)] = "Underweight"
+lipoMeta$BMI_cut[which(lipoMeta$BMI>=18.49 &lipoMeta$BMI<25 )] = "Healthy weight"
+lipoMeta$BMI_cut[which(lipoMeta$BMI>=25 &lipoMeta$BMI <30 )] = "Overweight"
+lipoMeta$BMI_cut[which(lipoMeta$BMI>=30)] = "Obese"
+```
+
+# Creating a new column for comb of BMI category and DM
+```{r}
+lipoMeta$comb = ""
+lipoMeta$comb = gsub("\\s","", paste(lipoMeta$BMI_cut,"_", lipoMeta$DM))
+```
+
+```{r}
+#save(lipoMeta, file="MAU_lipo_meta_06032024.rda")
+#write.csv(lipoMeta, file="MAU_lipo_meta_06032024.csv", row.names = F)
+```
+
+
+```{r}
+lipoMeta$Gender[which(lipoMeta$Gender == "Male")] = "M"
+lipoMeta$Gender[which(lipoMeta$Gender == "Female")] = "F"
+```
+
+
+
+```{r}
+bus_sau <- read.csv("Bust1_Sau_Healthy_DM2_28112023.csv", header=TRUE)
+
+# renaming and adding columns of bus_sau to be consistent with Mauritius
+names(bus_sau )[names(bus_sau ) == "age"] <- "Age"
+names(bus_sau )[names(bus_sau ) == "bmi"] <- "BMI"
+names(bus_sau )[names(bus_sau ) == "sex"] <- "Sex"
+names(bus_sau )[names(bus_sau ) == "BMI.weight"] <- "BMI_cut"
+
+bus_sau$overall_DM =""
+bus_sau$overall_DM[which(bus_sau$DM %in% c("DM1", "DM2"))] = "DM"
+bus_sau$overall_DM[which(bus_sau$DM == "NO DM")] = "NDM"
+
+bus_sau$overall_comb = ""
+bus_sau$overall_comb = gsub("\\s","", paste(bus_sau$BMI_cut,"_", bus_sau$overall_DM))
+
+bus_sau <- bus_sau %>% select(TPTG:sampleID, Age, Sex, BMI, BMI_cut, overall_DM, overall_comb)
+
+
+# renaming some columns of lipoMeta to be consistent with Busselton and Saudi
+names(lipoMeta)[names(lipoMeta) == "Survey.No"] <- "sampleID"
+names(lipoMeta)[names(lipoMeta) == "Gender"] <- "Sex"
+names(lipoMeta)[names(lipoMeta) == "DM"] <- "overall_DM"
+names(lipoMeta)[names(lipoMeta) == "BMI.weight"] <- "BMI_cut"
+names(lipoMeta)[names(lipoMeta) == "comb"] <- "overall_comb"
+
+lipoMeta <- lipoMeta %>% select(TPTG:sampleID, Age, Sex, BMI, BMI_cut, overall_DM, overall_comb)
+
+bsm <- rbind(bus_sau, lipoMeta)
+
+bsm$overall_comb[which(bsm$overall_comb == "Healthyweight_NDM")] = "Healthy_NDM"
+bsm$overall_comb[which(bsm$overall_comb == "Healthyweight_DM")] = "Healthy_DM"
+
+write.csv(bsm, file = "BUS_SAU_MAU_orig_lipo_meta_06032024.csv", row.names = FALSE)
+
+#add cohort column manually to the csv file and read it back to R. 
+orig_bsm <- read.csv("BUS_SAU_MAU_orig_lipo_meta_06032024.csv", header = T) # with an added cohort column
+
+```
+
+
+# Correcting for age, sex, cohort - ALL Mauritius incl DM_NoMed
+```{r}
+# running linear model for each of the 112 lipoprotein 
+# we want to get the residuals because the residuals are the remaining of lipoprotein's effect after the gender effect is removed. 
+# steps: 
+# 1. linear model with gender as predictor is fitted 
+# 2. extract the residuals 
+# 3. use the residuals as the new lipoprotein matrix 
+
+lipoList <- colnames(bsm[, 1:112])
+ann <- bsm[, 113:ncol(bsm)]
+
+# converting sex from Male/Female to 0 (Female) and 1 (Male).
+bsm$sex01 <- ifelse(bsm$Sex == "F", 0, 1)
+
+# converting cohort from Busselton/Saudi to 0 (Busselton), 1 (Saudi), 2 (Mauritius)
+bsm$co012 =""
+bsm$co012[which(bsm$cohort == "BUSSELTON")] = 0
+bsm$co012[which(bsm$cohort == "SAUDI")] = 1
+bsm$co012[which(bsm$cohort == "MAURITIUS")] = 2
+
+# running lm
+out <- vector('list', length(lipoList))
+resid <- vector('list', length(lipoList))
+
+for (i in seq_along(lipoList)){
+  out[[i]] <- lm(paste(lipoList[i],  '~', 'sex01', '+', 'Age', '+', 'co012'),
+               data = bsm)
+  resid[[i]] <- out[[i]]$residuals
+}
+
+# bind all the residuals together to form a matrix 
+resid <- do.call("cbind", resid)
+colnames(resid) <- colnames(bsm[, 1:112])
+class(resid)
+#[1] "matrix" "array"
+dim(resid)
+#[1] 2411 112
+
+# adding grand(overall) median for each lipo back to the residual to recover the scale of the value
+grandMedian <- as.list(apply(bsm[, 1:112],2,median))
+grandMedian <- apply(bsm[, 1:112],2,median)
+length(grandMedian)
+#[1] 112
+class(grandMedian)
+#[1] "numeric"
+
+# making grandMedian shape/dimension the same as resid array so I can add them together to make corrected lipo dataframe/matrix
+testrep <- t(matrix(rep(list(grandMedian), times=112), ncol=2411))
+testrep2 <- t(do.call(cbind, testrep))
+dim(testrep2)
+#[1] 2411 112
+grandMedianrep <- testrep2
+
+cl <- resid + grandMedianrep # cl = corrected lipo
+dim(cl)
+#[1] 2411 112
+
+write.csv(cl, file = "BUS_SAU_MAU_correctedLipo_06032024.csv", row.names = F)
+
+bsm <- cbind(cl, ann)
+dim(bsm)
+#[1] 2411  120
+
+table(bsm$cohort)
+# BUSSELTON MAURITIUS     SAUDI 
+#      1976       253       182 
+
+bsm$overall_comb[which(bsm$overall_comb == "Healthyweight_NDM")] = "Healthy_NDM"
+bsm$overall_comb[which(bsm$overall_comb == "Healthyweight_DM")] = "Healthy_DM"
+
+table(bsm$cohort, bsm$overall_comb)
+  #           Healthy_DM Healthy_NDM Obese_DM Obese_NDM Overweight_DM Overweight_NDM
+  # BUSSELTON         18         502       81       480            55            834
+  # MAURITIUS         32          38       48        21            65             40
+  # SAUDI              6          57       44        51             5             19
+  #          
+  #           Underweight_DM Underweight_NDM
+  # BUSSELTON              0               6
+  # MAURITIUS              1               8
+  # SAUDI                  0               0
+
+write.csv(bsm, file = "BUS_SAU_MAU_correctedLipo_plus_origMeta_06032024.csv", row.names = F)
+```
