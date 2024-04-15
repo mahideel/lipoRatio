@@ -10,6 +10,7 @@ output: html_document
 bus_sau2 <- read.csv("~/git/mahideel/lipoRatio/BusT1_Sau_Healthy_DM2_28112023.csv")
 names(bus_sau2)
 ```
+
 #Data Prep
 ```{r}
 abe <- bus_sau2
@@ -18,6 +19,8 @@ abe$L2CE <- abe$L2CH - abe$L2FC
 abe$L3CE <- abe$L3CH - abe$L3FC
 abe$L4CE <- abe$L4CH - abe$L4FC
 ```
+
+
 
 #Mauritius loading data
 ```{r}
@@ -110,13 +113,42 @@ abem <- rbind(abe, mau)
 
 ```
 
+#phillip
+based on ratio, particle number explanation
+```{r}
+# Calculate total lipid for each level
+abem$L1TotLip <- rowSums(abem[, c("L1TG", "L1FC", "L1CE", "L1PL")])
+abem$L2TotLip <- rowSums(abem[, c("L2TG", "L2FC", "L2CE", "L2PL")])
+abem$L3TotLip <- rowSums(abem[, c("L3TG", "L3FC", "L3CE", "L3PL")])
+abem$L4TotLip <- rowSums(abem[, c("L4TG", "L4FC", "L4CE", "L4PL")])
+
+# Calculate percentages for each lipid component at each level, Do CH not CE as you use CH and FC to make CE
+lipids <- c("TG", "FC", "CH", "PL")
+
+for (level in 1:4) {
+  for (lipid in lipids) {
+    abem[[paste0("L", level, lipid, "%")]] <- abem[[paste0("L", level, lipid)]] / abem[[paste0("L", level, "TotLip")]]
+  }
+}
+
+```
+
 #Pie Chart Function
 ```{r}
-generate_pie_chart <- function(data, variable) {
+generate_pie_chart <- function(data, variable, particleNo = T) {
   # Filter the data based on the selected variable
-  vars <- grep(pattern = paste0(variable, ".*[^BNH]$"),
-               x = names(data),
-               value = TRUE)
+  # use either the particle number or just regular data
+  if(particleNo == T){
+    vars <- grep(pattern = paste0(variable, ".*[^BNH]%"),
+             x = names(data),
+             value = TRUE)
+  } else {
+    #if you dont want to use the % of total
+    vars <- grep(pattern = paste0(variable, ".*[^BNH]$"),
+             x = names(data)[!grepl("%|TotLip", names(data))],
+             value = TRUE)
+  }
+  
   df <- data[, c("cohort", "comb", vars)]
 
   # Pivot the data longer
@@ -138,7 +170,8 @@ generate_pie_chart <- function(data, variable) {
   pie_chart <- ggplot(df, aes(x = "", y = normalized_avg, fill = name)) +
     geom_bar(stat = "identity", width = 1) +  # Create bars with identity stat and width 1
     coord_polar(theta = "y") +  # Convert to polar coordinates
-    scale_fill_manual(values = scales::hue_pal()(length(unique(dF$name)))) +  # Use the same colors as the bar chart
+    scale_fill_manual(values = c("red", "green", "blue", "pink"))+
+    #scale_fill_manual(values = scales::hue_pal()(length(unique(dF$name)))) +  # Use the same colors as the bar chart
     theme_void() +  # Remove unnecessary elements
     theme(legend.position = "right", # Position legend theme
           strip.placement = "outside",
@@ -160,13 +193,18 @@ generate_pie_chart <- function(data, variable) {
 ```
 
 ```{r}
+#only health weight and obese 
 
-pie_chart_L1 <- generate_pie_chart(data = abem, variable = "L1")
+unique(abem$BMI.weight)
+abem2 <- abem[abem$BMI.weight %in% c("Healthy", "Obese"), ]
+
+
+pie_chart_L1 <- generate_pie_chart(data = abem2, variable = "L1")
 pie_chart_L1 + ggtitle("L1")
-pie_chart_L2 <- generate_pie_chart(data = abem, variable = "L2")
+pie_chart_L2 <- generate_pie_chart(data = abem2, variable = "L2")
 pie_chart_L2 + ggtitle("L2")
-pie_chart_L3 <- generate_pie_chart(data = abem, variable = "L3")
+pie_chart_L3 <- generate_pie_chart(data = abem2, variable = "L3")
 pie_chart_L3 + ggtitle("L3")
-pie_chart_L4 <- generate_pie_chart(data = abem, variable = "L4")
+pie_chart_L4 <- generate_pie_chart(data = abem2, variable = "L4")
 pie_chart_L4 + ggtitle("L4")
 ```
