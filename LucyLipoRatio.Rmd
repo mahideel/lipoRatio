@@ -18,6 +18,7 @@ abe$L1CE <- abe$L1CH - abe$L1FC
 abe$L2CE <- abe$L2CH - abe$L2FC
 abe$L3CE <- abe$L3CH - abe$L3FC
 abe$L4CE <- abe$L4CH - abe$L4FC
+abe$L5CE <- abe$L5CH - abe$L5FC
 ```
 
 
@@ -56,7 +57,7 @@ columns_to_keep <- c( "cohortName", "sampleID")
 columns_to_keep2 <- c("DM", "Gender", "Age", "Systolic1", "Diastolic1", "BMI", "Height1","Waist1", "Weight1", "FBG")
 
 lipoMeta <- cbind(lipoMeta[, columns_to_keep], lipoMeta2[, columns_to_keep2])
-rm(lipoMeta2)
+#rm(lipoMeta2)
 
 #gender
 lipoMeta$Gender[which(lipoMeta$Gender == "Male")] = "M"
@@ -95,10 +96,11 @@ lipoData$L1CE <- lipoData$L1CH - lipoData$L1FC
 lipoData$L2CE <- lipoData$L2CH - lipoData$L2FC
 lipoData$L3CE <- lipoData$L3CH - lipoData$L3FC
 lipoData$L4CE <- lipoData$L4CH - lipoData$L4FC
+lipoData$L5CE <- lipoData$L5CH - lipoData$L5FC
 
 mau <- cbind(lipoData, lipoMeta)
 
-rm(lipoData, lipoMeta)
+#rm(lipoData, lipoMeta)
 ```
 
 #add mau to saudi and bus
@@ -121,11 +123,12 @@ abem$L1TotLip <- rowSums(abem[, c("L1TG", "L1FC", "L1CE", "L1PL")])
 abem$L2TotLip <- rowSums(abem[, c("L2TG", "L2FC", "L2CE", "L2PL")])
 abem$L3TotLip <- rowSums(abem[, c("L3TG", "L3FC", "L3CE", "L3PL")])
 abem$L4TotLip <- rowSums(abem[, c("L4TG", "L4FC", "L4CE", "L4PL")])
+abem$L5TotLip <- rowSums(abem[, c("L5TG", "L5FC", "L5CE", "L5PL")])
 
 # Calculate percentages for each lipid component at each level, Do CH not CE as you use CH and FC to make CE
-lipids <- c("TG", "FC", "CH", "PL")
+lipids <- c("TG", "FC", "CE", "PL")
 
-for (level in 1:4) {
+for (level in 1:5) {
   for (lipid in lipids) {
     abem[[paste0("L", level, lipid, "%")]] <- abem[[paste0("L", level, lipid)]] / abem[[paste0("L", level, "TotLip")]]
   }
@@ -143,7 +146,7 @@ generate_pie_chart <- function(data, variable, particleNo = T) {
              x = names(data),
              value = TRUE)
   } else {
-    #if you dont want to use the % of total
+    #if you don't want to use the % of total
     vars <- grep(pattern = paste0(variable, ".*[^BNH]$"),
              x = names(data)[!grepl("%|TotLip", names(data))],
              value = TRUE)
@@ -196,8 +199,7 @@ generate_pie_chart <- function(data, variable, particleNo = T) {
 #only health weight and obese 
 
 unique(abem$BMI.weight)
-abem2 <- abem[abem$BMI.weight %in% c("Healthy", "Obese"), ]
-
+abem2 <- na.omit( abem[abem$BMI.weight %in% c("Healthy", "Obese"), ])
 
 pie_chart_L1 <- generate_pie_chart(data = abem2, variable = "L1")
 pie_chart_L1 + ggtitle("L1")
@@ -207,4 +209,87 @@ pie_chart_L3 <- generate_pie_chart(data = abem2, variable = "L3")
 pie_chart_L3 + ggtitle("L3")
 pie_chart_L4 <- generate_pie_chart(data = abem2, variable = "L4")
 pie_chart_L4 + ggtitle("L4")
+pie_chart_L5 <- generate_pie_chart(data = abem2, variable = "L5")
+pie_chart_L5 + ggtitle("L5")
+```
+
+#L2 L5 Ratio
+```{r}
+
+# Calculate percentages for each lipid component at each level, Do CH not CE as you use CH and FC to make CE
+lipids <- c("TG", "FC", "CE", "PL")
+
+  for (lipid in lipids) {
+    abem[[paste0("ratio", lipid, "%")]] <- abem[[paste0("L2", lipid, "%")]] / abem[[paste0("L5", lipid, "%")]]
+  }
+abem2<- na.omit( abem[abem$BMI.weight %in% c("Healthy", "Obese"), ])
+
+idx <- which(is.infinite(abem2$`ratioTG%`) |is.infinite(abem2$`ratioFC%`) |is.infinite(abem2$`ratioCE%`) |is.infinite(abem2$`ratioPL%`) )
+abem2<- abem2[-idx,]
+
+generate_pie_chart(data = abem2, variable = "ratio")
+```
+
+#boxplots of healthy (DM and NDM)
+```{r}
+
+# Define the columns to be plotted
+columns_to_plot <- c( "L2TG%", "L5TG%")
+
+# Create a long format of the data frame
+health_long <- tidyr::pivot_longer(abem2, cols = columns_to_plot)
+
+facet_counts <- count(abem2, cohort, DM)
+# BoxPlot
+ggplot(health_long, aes(x = name, y = value)) +
+  geom_boxplot() +
+  facet_grid(cohort ~ DM, scales = "free_x", switch = "y") +  # cohort on the side, DM on top
+  geom_text(data = facet_counts, aes(label = n, x = Inf, y = Inf), hjust = 1, vjust = 1)+
+  labs(x = "Variable", y = "Value") +
+  theme_bw() +
+  ggtitle("Healthy Weight TG by particle No")
+
+# Distribution Plot
+ggplot(health_long, aes(x = value, fill = name)) +
+  geom_density(alpha = 0.5) +  # Use geom_density() for distribution plots
+  facet_grid(cohort ~ DM, scales = "free_x", switch = "y") +  # cohort on the side, DM on top
+  #geom_text(data = facet_counts, aes(label = n, x = Inf, y = Inf), hjust = 1, vjust = 1) +
+  labs(x = "Value", y = "Density") +  # Adjust axis labels accordingly
+  theme_bw() +
+  ggtitle("Healthy Weight TG by particle No")
+
+
+cohort_dm_table <- table(abem2$cohort, abem2$DM)
+
+# Convert the table to a data frame for better visualization
+cohort_dm_df <- as.data.frame.matrix(cohort_dm_table)
+
+# Set meaningful column names
+colnames(cohort_dm_df) <- c("NO DM", "DM")
+
+# Print the table
+print(cohort_dm_df)
+
+```
+
+#mauritius outliers
+```{r}
+idx <- which(abem2$BMI.weight == "Healthy" & abem2$DM =="NO DM")
+
+healthNODM <- abem2[idx,]
+
+samp<- healthNODM[which(healthNODM$cohort == "mauritius"), "sampleID"]
+
+matching_sourceIDs <- lipoMeta[lipoMeta$sampleID %in% samp, "sourceID"]
+
+maumeta<-
+  read_xls("~/Downloads/Mauritius_cohort_metadataFeb2024 (1).xls")
+
+maumeta <- maumeta[maumeta$Survey.No. %in% matching_sourceIDs, ]
+
+
+maumeta$Have.you.ever.been.tested.positive.to.COVID.19..
+maumeta$Have.you.been.hospitalised.for.COVID.19.
+maumeta$High.blood.Cholesterol.Confirmation
+
 ```
