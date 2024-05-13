@@ -1,6 +1,6 @@
 ---
-title: "LucyLipoRatio"
-author: "Lucy Grigoroff"
+title: "NoviaLipoRatio -- modified version of Lucy Grigoroff's"
+author: "Lucy Griforoff & Novia Minaee"
 date: "2024-03-12"
 output: html_document
 editor_options: 
@@ -9,6 +9,15 @@ editor_options:
 
 # Load packages
 ```{r}
+library(dplyr)
+library(readr)
+library(reshape2)
+library(ggplot2)
+library(ggrepel)
+library(tibble)
+library(ggpubr)
+library(mva.plots)
+library(ca)
 library(tidyr)
 library(tidyverse)
 ```
@@ -29,6 +38,110 @@ abe$L3CE <- abe$L3CH - abe$L3FC
 abe$L4CE <- abe$L4CH - abe$L4FC
 abe$L5CE <- abe$L5CH - abe$L5FC
 ```
+
+
+#13May2024 add CRP info to Bus
+```{r}
+#loading buss metadata from Sam 
+ann_buss <- read.csv("Anno_t1_MH_new.csv", header=TRUE)
+dim(ann_buss) #1976 obs
+
+#loading buss lipo from Reika
+buss <- read.csv(file='Busselton_Lipo_290523.csv') 
+dim(buss) #4292 obs
+
+# matching metadata and lipoprotein 
+idx<-which(ann_buss$sampleID %in% buss$Lipo_Ann.sampleID) # 1976
+ann_buss<-ann_buss[which(ann_buss$sampleID %in% buss$Lipo_Ann.sampleID),]
+idx<-which(buss$Lipo_Ann.sampleID %in% ann_buss$sampleID)  #1976
+buss<-buss[idx,]
+
+ann_buss<-ann_buss[match(buss$Lipo_Ann.sampleID, ann_buss$sampleID),]
+lipo_buss <- buss[, 3:114]
+
+buss2 <- cbind(lipo_buss, ann_buss)
+dim(buss2) #1976
+
+# Selecting only those with Diabetes status not blank or NA.
+idx2 <- which(buss2$Summary_Type2_Diabetes_idx %in% c(0, 1)) #1976
+### NOTE: Diabetes_ and Summary_Type2_Diabetes give roughly the same number of overall NO DM vs DM. 
+### BUT Diabetes_ = 1 includes uncertain DM1 diagnosis. So here onwards it's safer to use Summary_Type2_Diabetes_idx. 
+
+buss2 <- buss2[idx2, ]
+dim(buss2) #1976
+
+buss2$BMI.weight = ""
+buss2$BMI.weight[which(buss2$bmi < 18.5)] = "Underweight"
+buss2$BMI.weight[which(buss2$bmi < 25 & buss2$bmi >= 18.5)] = "Healthy"
+buss2$BMI.weight[which(buss2$bmi < 30 & buss2$bmi >= 25)] = "Overweight"
+buss2$BMI.weight[which(buss2$bmi > 30)] = "Obese"
+
+
+table(buss2$Diabetes_, buss2$BMI.weight) 
+# 0 = No DM, 1 = DM
+
+table(buss2$Summary_Type2_Diabetes_idx, buss2$BMI.weight) 
+# 0 = Not DM2, 1 = DM2
+
+### To proceed with NO DM = Summary_Type2_Diabetes_idx == 0 for now until Elaine says otherwise (SL, NM 28/11/2023)
+
+# BUS - diabesity category 
+# Creating the same diabetes and obesity categories for Bus as in Sau's
+buss2$DM = ""
+buss2$DM[which(buss2$Summary_Type2_Diabetes_idx == 0)] = "NO DM"
+buss2$DM[which(buss2$Summary_Type2_Diabetes_idx == 1)] = "DM2"
+
+buss2$comb = gsub("\\s","", paste(buss2$BMI.weight,"_", buss2$DM))
+
+
+write.csv(buss2, file = "Matched_Bus_anno_lipo_allcolumns_NM_13052024.csv")
+
+buss3 <- buss2 %>% select(TPTG:H4A2, sampleID, age, sex, height, weight, cholesterol, triglycerides, glucose, high_density_lipoprotein, c_reactive_protein, creatinine, bmi, waist, sbp, dbp, bmi_cat, age_cat, BMI.weight, DM, comb)
+
+buss3$cohort = "BUSSELTON"
+
+write.csv(buss3, file = "Matched_Bus_anno_lipo_extendedversion_NM_13052024.csv")
+```
+
+```{r}
+buss3$L1CE <- buss3$L1CH - buss3$L1FC
+buss3$L2CE <- buss3$L2CH - buss3$L2FC
+buss3$L3CE <- buss3$L3CH - buss3$L3FC
+buss3$L4CE <- buss3$L4CH - buss3$L4FC
+buss3$L5CE <- buss3$L5CH - buss3$L5FC
+```
+
+```{r}
+buss3$L1TotLip <- rowSums(buss3[, c("L1TG", "L1FC", "L1CE", "L1PL")])
+buss3$L2TotLip <- rowSums(buss3[, c("L2TG", "L2FC", "L2CE", "L2PL")])
+buss3$L3TotLip <- rowSums(buss3[, c("L3TG", "L3FC", "L3CE", "L3PL")])
+buss3$L4TotLip <- rowSums(buss3[, c("L4TG", "L4FC", "L4CE", "L4PL")])
+buss3$L5TotLip <- rowSums(buss3[, c("L5TG", "L5FC", "L5CE", "L5PL")])
+```
+
+#Corr CRP w lipo
+```{r}
+library(corrplot)
+
+#check if there's NA in c_reactive_protein column
+sum(is.na(df$c_reactive_protein)) # 3 NAs.
+
+#omit NA
+df <- na.omit(buss3 %>% filter(BMI.weight == "Healthy") %>% select(TPTG:H4A2, c_reactive_protein)) #519
+
+#constructing correlation matrix (correlogram)
+M <- cor(df)
+head(round(M,2))
+
+#creating heatmap
+corrplot(M, method="circle", cl.ratio = 0.2, tl.srt = 45)
+
+
+
+
+```
+
+
 
 
 
@@ -58,9 +171,12 @@ lipoMeta2<-lipoMeta2[match(lipoMeta$sourceID, lipoMeta2$Survey.No),] #253
 
 #Survey.No == 17 needs the DM status changed to NDM. 
 lipoMeta2$DM[which(lipoMeta2$Survey.No=="17")] ="NDM"
+
+#renaming cohort from mauritius to MAURITIUS to be consistent with Bus and Sau
+lipoMeta2$cohort[which(lipoMeta2$cohort == "mauritius")] = "MAURITIUS"
 ```
 
-#make it align with the conventions for saudi and busso cohorts
+##make it align with the conventions for saudi and busso cohorts
 ```{r}
 columns_to_keep <- c( "cohortName", "sampleID")
 columns_to_keep2 <- c("DM", "Gender", "Age", "Systolic1", "Diastolic1", "BMI", "Height1","Waist1", "Weight1", "FBG")
@@ -112,7 +228,7 @@ mau <- cbind(lipoData, lipoMeta)
 #rm(lipoData, lipoMeta)
 ```
 
-#add mau to saudi and bus
+##add mau to saudi and bus
 ```{r}
 cols_abe <- colnames(abe)
 cols_mau <- colnames(mau)
@@ -121,8 +237,74 @@ cols_mau <- colnames(mau)
 mau <- mau[, cols_abe]
 
 abem <- rbind(abe, mau)
+abem$cohort[abem$cohort == 'mauritius'] <- "MAURITIUS"
+abem$comb <- factor(abem$comb, levels = c("Healthy_NODM", "Obese_NODM", "Healthy_DM2", "Obese_DM2"))
 
 ```
+
+##boxplots of healthy (DM and NDM)
+```{r}
+# Define the columns to be plotted
+columns_to_plot <- c( "L2TG%", "L5TG%")
+
+# Create a long format of the data frame
+health_long <- tidyr::pivot_longer(abem2, cols = columns_to_plot)
+
+facet_counts <- count(abem2, cohort, DM)
+# BoxPlot
+ggplot(health_long, aes(x = name, y = value)) +
+  geom_boxplot() +
+  facet_grid(cohort ~ DM, scales = "free_x", switch = "y") +  # cohort on the side, DM on top
+  geom_text(data = facet_counts, aes(label = n, x = Inf, y = Inf), hjust = 1, vjust = 1)+
+  labs(x = "Variable", y = "Value") +
+  theme_bw() +
+  ggtitle("Healthy Weight TG by particle No")
+
+# Distribution Plot
+ggplot(health_long, aes(x = value, fill = name)) +
+  geom_density(alpha = 0.5) +  # Use geom_density() for distribution plots
+  facet_grid(cohort ~ DM, scales = "free_x", switch = "y") +  # cohort on the side, DM on top
+  #geom_text(data = facet_counts, aes(label = n, x = Inf, y = Inf), hjust = 1, vjust = 1) +
+  labs(x = "Value", y = "Density") +  # Adjust axis labels accordingly
+  theme_bw() +
+  ggtitle("Healthy Weight TG by particle No")
+
+
+cohort_dm_table <- table(abem2$cohort, abem2$DM)
+
+# Convert the table to a data frame for better visualization
+cohort_dm_df <- as.data.frame.matrix(cohort_dm_table)
+
+# Set meaningful column names
+colnames(cohort_dm_df) <- c("NO DM", "DM")
+
+# Print the table
+print(cohort_dm_df)
+
+```
+
+##mauritius outliers
+```{r}
+idx <- which(abem2$BMI.weight == "Healthy" & abem2$DM =="NO DM")
+
+healthNODM <- abem2[idx,]
+
+samp<- healthNODM[which(healthNODM$cohort == "mauritius"), "sampleID"]
+
+matching_sourceIDs <- lipoMeta[lipoMeta$sampleID %in% samp, "sourceID"]
+
+maumeta<-
+  read_xls("~/Downloads/Mauritius_cohort_metadataFeb2024 (1).xls")
+
+maumeta <- maumeta[maumeta$Survey.No. %in% matching_sourceIDs, ]
+
+
+maumeta$Have.you.ever.been.tested.positive.to.COVID.19..
+maumeta$Have.you.been.hospitalised.for.COVID.19.
+maumeta$High.blood.Cholesterol.Confirmation
+
+```
+
 
 #Lipo composition per each subfraction (phillip)
 based on ratio, particle number explanation
@@ -200,14 +382,13 @@ generate_pie_chart <- function(data, variable, particleNo = T) {
   
   return(pie_chart)
 }
-
-
 ```
 
 ```{r}
 #only health weight and obese 
 unique(abem$BMI.weight)
 abem2 <- na.omit( abem[abem$BMI.weight %in% c("Healthy", "Obese"), ])
+abem2$cohort[which(abem2$cohort == "mauritius")] = "MAURITIUS"
 
 pie_chart_L1 <- generate_pie_chart(data = abem2, variable = "L1")
 pie_chart_L1 + ggtitle("L1")
@@ -238,66 +419,609 @@ abem2<- abem2[-idx,]
 generate_pie_chart(data = abem2, variable = "ratio")
 ```
 
-#boxplots of healthy (DM and NDM)
+
+#biplot show how LDL, HDL and TG are for the 3 populations
+##only selecting 3 parameters: LDCH, HDCH and TPTG
 ```{r}
+abem3 <- abem2 %>% select("LDCH", "HDCH", "TPTG", "sampleID":"comb")
+abem3BUS <- abem3 %>% filter(cohort == "BUSSELTON")
+range(abem3BUS$TPTG)
 
-# Define the columns to be plotted
-columns_to_plot <- c( "L2TG%", "L5TG%")
+abem3SAU <- abem3 %>% filter (cohort == "SAUDI")
+range(abem3SAU$TPTG)
 
-# Create a long format of the data frame
-health_long <- tidyr::pivot_longer(abem2, cols = columns_to_plot)
+abem3MAU <- abem3 %>% filter (cohort == "mauritius")
+range(abem3MAU$TPTG)
+```
 
-facet_counts <- count(abem2, cohort, DM)
-# BoxPlot
-ggplot(health_long, aes(x = name, y = value)) +
-  geom_boxplot() +
-  facet_grid(cohort ~ DM, scales = "free_x", switch = "y") +  # cohort on the side, DM on top
-  geom_text(data = facet_counts, aes(label = n, x = Inf, y = Inf), hjust = 1, vjust = 1)+
-  labs(x = "Variable", y = "Value") +
-  theme_bw() +
-  ggtitle("Healthy Weight TG by particle No")
+##Busselton Cholesterol Profile 
+```{r}
+pca <- PCA(abem3BUS[, 1:3], center = T, scale. = T, rank = 2)
 
-# Distribution Plot
-ggplot(health_long, aes(x = value, fill = name)) +
-  geom_density(alpha = 0.5) +  # Use geom_density() for distribution plots
-  facet_grid(cohort ~ DM, scales = "free_x", switch = "y") +  # cohort on the side, DM on top
-  #geom_text(data = facet_counts, aes(label = n, x = Inf, y = Inf), hjust = 1, vjust = 1) +
-  labs(x = "Value", y = "Density") +  # Adjust axis labels accordingly
-  theme_bw() +
-  ggtitle("Healthy Weight TG by particle No")
+#externally decide color palette (also able to do for continuous variables)
+bmiPalette <- c("Healthy" = "#66C2A5",
+                    "Obese" = "#FC8D62")
+
+#make your scores plot
+bmiPCA <- plotScores(model = pca, 
+                         optns = list(plotTitle = " PCA Scores Plot",
+                                      size = 1,
+                                      alpha = 0.8,
+                                      PCi = 1, 
+                                      PCj = 2, 
+                                      color = abem3BUS$BMI.weight, 
+                                      colorTitle = "BMI",
+                                      discretePalette = bmiPalette, 
+                                      theme = theme(legend.position = "bottom"))) + 
+  stat_ellipse(data = abem3BUS, 
+               aes(fill = BMI.weight), 
+               geom = "polygon", 
+               alpha = 0.5) + 
+  scale_fill_manual(values = bmiPalette)
+
+bmiPCA
+
+#make the biplot with arrows
+
+#setting a scale for the loadings axis, just change scalef if you want to play around with it
+scalef <- 10
+
+# Get arrow end point locations (loadings*scaling for correct scale)
+l.x <- pca$data$loadings[,1]*scalef
+l.y <- pca$data$loadings[,2]*scalef
+
+# Get label positions (%15 further than end of arrows)
+l.posx <- l.x*1.15
+l.posy <- l.y*1.15
+
+# Get labels for plot (variable names)
+l.labels <- row.names(pca$data$loadings)
+lim <- 1.2
+secondary_limits <- c(-lim, lim) * scalef
+
+##############plotting######################
+bmiBiplotArrows <- bmiPCA +
+  geom_segment(data = data.frame(pca$data$loadings),
+               aes(x = 0, 
+                   y = 0, 
+                   xend = l.x, 
+                   yend = l.y), 
+               color = "black",
+               arrow = arrow(length = unit(0.2, "cm"), 
+                             type = "closed")) +
+  geom_text_repel(data = data.frame(pca$data$loadings),
+                  aes(x = l.posx, 
+                      y = l.posy, 
+                      label = l.labels), 
+                  color = "black",
+                  size = 3, 
+                  hjust = 0.5) +
+  scale_x_continuous(sec.axis = sec_axis(trans = ~ . / scalef, 
+                                         breaks = c(-lim, 0, lim),
+                                         name = "PC1 Loadings"),
+                     limits = secondary_limits,
+                     expand = c(0, 0)) +
+  scale_y_continuous(sec.axis = sec_axis(trans = ~ . / scalef, 
+                                         breaks = c(-lim, 0, lim),
+                                         name = "PC2 Loadings"),
+                     limits = secondary_limits,
+                     expand = c(0, 0)) +
+  #theme(legend.position = "none")+
+  theme(legend.position = "bottom") + 
+  labs(title = "Busselton")
 
 
-cohort_dm_table <- table(abem2$cohort, abem2$DM)
-
-# Convert the table to a data frame for better visualization
-cohort_dm_df <- as.data.frame.matrix(cohort_dm_table)
-
-# Set meaningful column names
-colnames(cohort_dm_df) <- c("NO DM", "DM")
-
-# Print the table
-print(cohort_dm_df)
+bmiBiplotArrows
 
 ```
 
-#mauritius outliers
+
+##Saudi Cholesterol Profile 
 ```{r}
-idx <- which(abem2$BMI.weight == "Healthy" & abem2$DM =="NO DM")
+pca2 <- PCA(abem3SAU[, 1:3], center = T, scale. = T, rank = 2)
 
-healthNODM <- abem2[idx,]
+#externally decide color palette (also able to do for continuous variables)
+bmiPalette <- c("Healthy" = "#66C2A5",
+                    "Obese" = "#FC8D62")
 
-samp<- healthNODM[which(healthNODM$cohort == "mauritius"), "sampleID"]
+#make your scores plot
+bmiPCA2 <- plotScores(model = pca2, 
+                         optns = list(plotTitle = " PCA Scores Plot",
+                                      size = 1,
+                                      alpha = 0.8,
+                                      PCi = 1, 
+                                      PCj = 2, 
+                                      color = abem3SAU$BMI.weight, 
+                                      colorTitle = "BMI",
+                                      discretePalette = bmiPalette, 
+                                      theme = theme(legend.position = "bottom"))) + 
+  stat_ellipse(data = abem3SAU, 
+               aes(fill = BMI.weight), 
+               geom = "polygon", 
+               alpha = 0.5) + 
+  scale_fill_manual(values = bmiPalette)
 
-matching_sourceIDs <- lipoMeta[lipoMeta$sampleID %in% samp, "sourceID"]
+bmiPCA2
 
-maumeta<-
-  read_xls("~/Downloads/Mauritius_cohort_metadataFeb2024 (1).xls")
+#make the biplot with arrows
 
-maumeta <- maumeta[maumeta$Survey.No. %in% matching_sourceIDs, ]
+#setting a scale for the loadings axis, just change scalef if you want to play around with it
+scalef <- 10
+
+# Get arrow end point locations (loadings*scaling for correct scale)
+l.x <- pca2$data$loadings[,1]*scalef
+l.y <- pca2$data$loadings[,2]*scalef
+
+# Get label positions (%15 further than end of arrows)
+l.posx <- l.x*1.15
+l.posy <- l.y*1.15
+
+# Get labels for plot (variable names)
+l.labels <- row.names(pca2$data$loadings)
+lim <- 1
+secondary_limits <- c(-lim, lim) * scalef
+
+##############plotting######################
+bmiBiplotArrows2 <- bmiPCA2 +
+  geom_segment(data = data.frame(pca2$data$loadings),
+               aes(x = 0, 
+                   y = 0, 
+                   xend = l.x, 
+                   yend = l.y), 
+               color = "black",
+               arrow = arrow(length = unit(0.2, "cm"), 
+                             type = "closed")) +
+  geom_text_repel(data = data.frame(pca2$data$loadings),
+                  aes(x = l.posx, 
+                      y = l.posy, 
+                      label = l.labels), 
+                  color = "black",
+                  size = 3, 
+                  hjust = 0) +
+  scale_x_continuous(sec.axis = sec_axis(trans = ~ . / scalef, 
+                                         breaks = c(-lim, 0, lim),
+                                         name = "PC1 Loadings"),
+                     limits = secondary_limits,
+                     expand = c(0, 0)) +
+  scale_y_continuous(sec.axis = sec_axis(trans = ~ . / scalef, 
+                                         breaks = c(-lim, 0, lim),
+                                         name = "PC2 Loadings"),
+                     limits = secondary_limits,
+                     expand = c(0, 0)) +
+  #theme(legend.position = "none")+
+  theme(legend.position = "bottom") + 
+  labs(title = "Saudi")
 
 
-maumeta$Have.you.ever.been.tested.positive.to.COVID.19..
-maumeta$Have.you.been.hospitalised.for.COVID.19.
-maumeta$High.blood.Cholesterol.Confirmation
+bmiBiplotArrows2 
+
+```
+
+
+##Mauritius Cholesterol Profile 
+```{r}
+pca3 <- PCA(abem3MAU[, 1:3], center = T, scale. = T, rank = 2)
+
+#externally decide color palette (also able to do for continuous variables)
+bmiPalette <- c("Healthy" = "#66C2A5",
+                    "Obese" = "#FC8D62")
+
+#make your scores plot
+bmiPCA3 <- plotScores(model = pca3, 
+                         optns = list(plotTitle = " PCA Scores Plot",
+                                      size = 1,
+                                      alpha = 0.8,
+                                      PCi = 1, 
+                                      PCj = 2, 
+                                      color = abem3MAU$BMI.weight, 
+                                      colorTitle = "BMI",
+                                      discretePalette = bmiPalette, 
+                                      theme = theme(legend.position = "bottom"))) + 
+  stat_ellipse(data = abem3MAU, 
+               aes(fill = BMI.weight), 
+               geom = "polygon", 
+               alpha = 0.5) + 
+  scale_fill_manual(values = bmiPalette)
+
+bmiPCA3
+
+#make the biplot with arrows
+
+#setting a scale for the loadings axis, just change scalef if you want to play around with it
+scalef <- 10
+
+# Get arrow end point locations (loadings*scaling for correct scale)
+l.x <- pca2$data$loadings[,1]*scalef
+l.y <- pca2$data$loadings[,2]*scalef
+
+# Get label positions (%15 further than end of arrows)
+l.posx <- l.x*1.15
+l.posy <- l.y*1.15
+
+# Get labels for plot (variable names)
+l.labels <- row.names(pca3$data$loadings)
+lim <- 1
+secondary_limits <- c(-lim, lim) * scalef
+
+##############plotting######################
+bmiBiplotArrows3 <- bmiPCA3 +
+  geom_segment(data = data.frame(pca3$data$loadings),
+               aes(x = 0, 
+                   y = 0, 
+                   xend = l.x, 
+                   yend = l.y), 
+               color = "black",
+               arrow = arrow(length = unit(0.2, "cm"), 
+                             type = "closed")) +
+  geom_text_repel(data = data.frame(pca3$data$loadings),
+                  aes(x = l.posx, 
+                      y = l.posy, 
+                      label = l.labels), 
+                  color = "black",
+                  size = 3, 
+                  hjust = 0) +
+  scale_x_continuous(sec.axis = sec_axis(trans = ~ . / scalef, 
+                                         breaks = c(-lim, 0, lim),
+                                         name = "PC1 Loadings"),
+                     limits = secondary_limits,
+                     expand = c(0, 0)) +
+  scale_y_continuous(sec.axis = sec_axis(trans = ~ . / scalef, 
+                                         breaks = c(-lim, 0, lim),
+                                         name = "PC2 Loadings"),
+                     limits = secondary_limits,
+                     expand = c(0, 0)) +
+  #theme(legend.position = "none")+
+  theme(legend.position = "bottom") + 
+  labs(title = "Mauritius")
+
+
+bmiBiplotArrows3
+
+```
+
+
+#9May2024
+##boxplots for Gerald Watts and Dick Chan
+```{r}
+# library(ggforce)
+# lipo_group<-c("TG","CH","FC","PL","AB|A1|A2")
+# 
+# lipo_group <- "PL"
+# for(i in lipo_group){
+#     data.frame(abem2%>%select(BMI.weight, cohort, TPTG:H1A2),abem2[,grep(i,names(abem2))])%>%pivot_longer(cols = !c(BMI.weight, cohort),names_to = "lipo",values_to = "val")%>%
+#     ggplot(aes(x = cohort, y = val,fill = BMI.weight))+geom_boxplot()+facet_wrap_paginate(~lipo,scales = "free")->p1
+#   
+#   plot(p1)
+# 
+# }
+
+# codes below didn't work - it produced plots but y scaling is very off for some reasons - must revisit 
+lipolist <- colnames(abem2[1:3])
+
+for (i in lipolist){
+  abem2 %>% ggplot(aes(x = cohort, y = get(i), fill = BMI.weight))+geom_boxplot()+ylab(i)-> p1
+  plot(p1)
+}
+
+
+abem2 %>% ggplot(aes(x = cohort, y = TPTG, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = TPCH, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = LDCH, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = HDCH, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = TPA1, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = TPA2, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = TPAB, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = VLTG, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = IDTG, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = LDTG, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = HDTG, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = VLFC, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = IDFC, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = LDFC, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = HDFC, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = VLCH, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = IDCH, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = H1TG, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = H2TG, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = H3TG, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = H4TG, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = H1CH, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = H2CH, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = H3CH, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = H4CH, fill = BMI.weight))+geom_boxplot()
+
+
+abem2 %>% ggplot(aes(x = cohort, y = H1FC, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = H2FC, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = H3FC, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = H4FC, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = HDCH, fill = BMI.weight))+geom_boxplot() + stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+abem2 %>% ggplot(aes(x = cohort, y = LDCH, fill = BMI.weight))+geom_boxplot()
+
+abem2 %>% ggplot(aes(x = cohort, y = LDCH, fill = BMI.weight))+geom_boxplot()
+
+abem2$nonHDLC <- abem2$TPCH - abem2$LDCH
+
+abem2 %>% ggplot(aes(x = cohort, y = nonHDLC, fill = BMI.weight))+geom_boxplot() + stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+abem2HW <- abem2 %>% filter(cohort %in% c("BUSSELTON", "SAUDI") & BMI.weight == "Healthy")
+
+abem2HW %>% ggplot(aes(x = cohort, y = HDCH, fill = BMI.weight))+geom_boxplot() + stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+abem2HW2 <- abem2 %>% filter(cohort %in% c("BUSSELTON", "mauritius") & BMI.weight == "Healthy")
+
+abem2HW2 %>% ggplot(aes(x = cohort, y = HDCH, fill = BMI.weight))+geom_boxplot() + stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+abem2HW3 <- abem2 %>% filter(cohort %in% c("SAUDI", "mauritius") & BMI.weight == "Healthy")
+
+abem2HW3 %>% ggplot(aes(x = cohort, y = HDCH, fill = BMI.weight))+geom_boxplot() + stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+abem2 %>% filter(cohort == "BUSSELTON") %>% ggplot(aes(x = cohort, y = TBPN, fill = BMI.weight))+geom_boxplot()+ stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+abem2 %>% filter(cohort == "BUSSELTON") %>% ggplot(aes(x = cohort, y = VLPN, fill = BMI.weight))+geom_boxplot()+ stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+abem2 %>% filter(cohort == "BUSSELTON") %>% ggplot(aes(x = cohort, y = IDPN, fill = BMI.weight))+geom_boxplot()+ stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+abem2 %>% filter(cohort == "BUSSELTON") %>% ggplot(aes(x = cohort, y = LDPN, fill = BMI.weight))+geom_boxplot()+ stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+abem2 %>% filter(cohort == "BUSSELTON") %>% ggplot(aes(x = cohort, y = L1PN, fill = BMI.weight))+geom_boxplot()+ stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+abem2 %>% filter(cohort == "BUSSELTON") %>% ggplot(aes(x = cohort, y = L2PN, fill = BMI.weight))+geom_boxplot()+ stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+abem2 %>% filter(cohort == "BUSSELTON") %>% ggplot(aes(x = cohort, y = L3PN, fill = BMI.weight))+geom_boxplot()+ stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+
+abem2 %>% filter(cohort == "BUSSELTON") %>% ggplot(aes(x = cohort, y = L4PN, fill = BMI.weight))+geom_boxplot()+ stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+abem2 %>% filter(cohort == "BUSSELTON") %>% ggplot(aes(x = cohort, y = L5PN, fill = BMI.weight))+geom_boxplot()+ stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+
+abem2 %>% filter(cohort == "BUSSELTON") %>% ggplot(aes(x = cohort, y = L6PN, fill = BMI.weight))+geom_boxplot()+ stat_compare_means(aes(label = after_stat(p.signif)),label.x = 1.25, method = c("wilcox"), vjust = 1)
+
+
+#wilcox.test(HDCH ~ comb2, data = tdf)
+
+```
+
+
+#Data prep for amalgamation with Omnihart
+```{r}
+#subset abem2 to keep columns to match what Omnihart dataset has. 
+
+abem4 <- abem2 %>% select("TPTG":"H4A2", "sampleID", "cohort", "age", "sex", "sbp", "dbp", "BMI.weight")
+
+col_abem4 <- colnames(abem4)
+```
+
+
+
+
+#Omnihart loading data 
+```{r}
+omni <- read.csv("Omnihart.csv", header = TRUE)
+
+omni2 <- omni %>% select("UsampleID", "GENDER", "SCRSBP", "SCRDBP", "AGE", "BMICAT", "TPTG":"H4A2")
+
+#adding cohort column to omnihart
+omni2$cohort = "OMNIHART"
+
+#renaming omni2 columns to be consistent with Bus, Sau and Mau
+names(omni2)[names(omni2) == "UsampleID"] <- "sampleID"
+names(omni2)[names(omni2) == "GENDER"] <- "sex"
+names(omni2)[names(omni2) == "SCRSBP"] <- "sbp"
+names(omni2)[names(omni2) == "SCRDBP"] <- "dbp"
+names(omni2)[names(omni2) == "AGE"] <- "age"
+names(omni2)[names(omni2) == "BMICAT"] <- "BMI.weight"
+
+#renaming values inside sex and BMI.weight column in omni2 to be consistent with Bus, Sau and Mau
+omni2$sex[which(omni2$sex == "Male")] = "M"
+omni2$sex[which(omni2$sex == "Female")] = "F"
+
+omni2$BMI.weight[which(omni2$BMI.weight == "Non-Overweight")] = "Healthy"
+
+#reorder omni2 column to match Bus, Sau and Mau columns (abem4)
+omni2 <- omni2[, col_abem4]
+
+```
+
+
+
+##add Omnihart to Bus, Sau and Mau data
+```{r}
+abemomni <- rbind(abem4, omni2)
+```
+
+
+```{r}
+abemomni %>% ggplot(aes(x = cohort, y = TPTG, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = TPCH, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = HDCH, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = LDCH, fill = BMI.weight))+geom_boxplot()
+
+abemomni$nonHDLC <- abemomni$TPCH - abemomni$LDCH
+
+abemomni %>% ggplot(aes(x = cohort, y = nonHDLC, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = TBPN, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = VLPN, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = IDPN, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = LDPN, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L1PN, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L2PN, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L3PN, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L4PN, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L5PN, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L6PN, fill = BMI.weight))+geom_boxplot()
+
+
+
+abemomni %>% ggplot(aes(x = cohort, y = H1CH, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = H2CH, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = H3CH, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = H4CH, fill = BMI.weight))+geom_boxplot()
+
+
+abemomni %>% ggplot(aes(x = cohort, y = H1TG, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = H2TG, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = H3TG, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = H4TG, fill = BMI.weight))+geom_boxplot()
+
+
+
+abemomni %>% ggplot(aes(x = cohort, y = L1TG, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L2TG, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L3TG, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L4TG, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L5TG, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L6TG, fill = BMI.weight))+geom_boxplot()
+
+
+abemomni %>% ggplot(aes(x = cohort, y = L1CH, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L2CH, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L3CH, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L4CH, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L5CH, fill = BMI.weight))+geom_boxplot()
+
+abemomni %>% ggplot(aes(x = cohort, y = L6CH, fill = BMI.weight))+geom_boxplot()
+
+table(abemomni$cohort, abemomni$BMI.weight)
+```
+
+
+#L1_3 vs L4_6 boxplot  
+```{r}
+abemomni$totL1_3CH <- abemomni$L1CH + abemomni$L2CH + abemomni$L3CH
+
+abemomni %>% ggplot(aes(x = cohort, y = totL1_3CH, fill = BMI.weight))+geom_boxplot()
+
+
+abemomni$totL4_6CH <- abemomni$L4CH + abemomni$L5CH + abemomni$L6CH
+
+abemomni %>% ggplot(aes(x = cohort, y = totL4_6CH, fill = BMI.weight))+geom_boxplot()
+
+L1_3 <- abemomni %>% select("sampleID", "cohort", "totL1_3CH", "BMI.weight")
+L1_3$LDLgroup <- "L1_3"
+names(L1_3)[names(L1_3) == "totL1_3CH"] <- "LDL"
+
+L4_6 <- abemomni %>% select("sampleID", "cohort", "totL4_6CH", "BMI.weight")
+L4_6$LDLgroup <- "L4_6"
+names(L4_6)[names(L4_6) == "totL4_6CH"] <- "LDL"
+
+df <- rbind(L1_3, L4_6)
+
+df %>% ggplot(aes(x = cohort, y = LDL, fill = LDLgroup))+geom_boxplot()
+
+library(data.table)
+
+dfm <- reshape2::melt(df[,c("LDL", "cohort", "BMI.weight", 'LDLgroup')])
+
+dfm %>% filter(dfm$BMI.weight == "Healthy") %>% 
+  ggplot(aes(x = cohort,y = value, fill= LDLgroup)) + 
+  geom_boxplot()+
+  labs(title="Healthy Weight")
+
+
+dfm %>% filter(dfm$BMI.weight == "Obese") %>% 
+  ggplot(aes(x = cohort,y = value, fill=LDLgroup)) + 
+    geom_boxplot() + 
+  labs(title="Obese")
+
+
+dfm %>% 
+  ggplot(aes(x = cohort,y = value, fill= LDLgroup)) + 
+  geom_boxplot() + 
+  facet_wrap(~BMI.weight, scale = "free")
+
+
+```
+
+##barplot if needed
+```{r}
+dfm %>% filter(dfm$BMI.weight == "Healthy") %>% 
+   ggplot(aes(x = cohort,y = value)) + 
+     geom_bar(aes(fill = LDLgroup),stat = "identity",position = "dodge") + 
+   labs(title="Healthy Weight")
+
+dfm %>% filter(dfm$BMI.weight == "Obese") %>% 
+   ggplot(aes(x = cohort,y = value)) + 
+     geom_bar(aes(fill = LDLgroup),stat = "identity",position = "dodge") + 
+   labs(title="Obese")
+```
+
+
+# NOT WORKING YET - new pie-chart just for bmi.weights not comb (DM)
+#Lipo composition per each subfraction (phillip)
+based on ratio, particle number explanation
+```{r}
+abemomni$L1CE <- abemomni$L1CH - abemomni$L1FC
+abemomni$L2CE <- abemomni$L2CH - abemomni$L2FC
+abemomni$L3CE <- abemomni$L3CH - abemomni$L3FC
+abemomni$L4CE <- abemomni$L4CH - abemomni$L4FC
+abemomni$L5CE <- abemomni$L5CH - abemomni$L5FC
+abemomni$L6CE <- abemomni$L6CH - abemomni$L6FC
+
+# Calculate total lipid for each level
+abemomni$L1TotLip <- rowSums(abemomni[, c("L1TG", "L1FC", "L1CE", "L1PL")])
+abemomni$L2TotLip <- rowSums(abemomni[, c("L2TG", "L2FC", "L2CE", "L2PL")])
+abemomni$L3TotLip <- rowSums(abemomni[, c("L3TG", "L3FC", "L3CE", "L3PL")])
+abemomni$L4TotLip <- rowSums(abemomni[, c("L4TG", "L4FC", "L4CE", "L4PL")])
+abemomni$L5TotLip <- rowSums(abemomni[, c("L5TG", "L5FC", "L5CE", "L5PL")])
+abemomni$L6TotLip <- rowSums(abemomni[, c("L6TG", "L6FC", "L6CE", "L6PL")])
 
 ```
