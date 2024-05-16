@@ -99,6 +99,8 @@ write.csv(buss2, file = "Matched_Bus_anno_lipo_allcolumns_NM_13052024.csv")
 buss3 <- buss2 %>% select(TPTG:H4A2, sampleID, age, sex, height, weight, cholesterol, triglycerides, glucose, high_density_lipoprotein, c_reactive_protein, creatinine, bmi, waist, sbp, dbp, bmi_cat, age_cat, BMI.weight, DM, comb)
 
 buss3$cohort = "BUSSELTON"
+names(buss3)[names(buss3) == "c_reactive_protein"] <- "CRP"
+names(buss3)[names(buss3) == "high_density_lipoprotein"] <- "HDLC"
 
 write.csv(buss3, file = "Matched_Bus_anno_lipo_extendedversion_NM_13052024.csv")
 ```
@@ -119,27 +121,238 @@ buss3$L4TotLip <- rowSums(buss3[, c("L4TG", "L4FC", "L4CE", "L4PL")])
 buss3$L5TotLip <- rowSums(buss3[, c("L5TG", "L5FC", "L5CE", "L5PL")])
 ```
 
-#Corr CRP w lipo
+##Corr CRP w lipo
 ```{r}
 library(corrplot)
 
-#check if there's NA in c_reactive_protein column
-sum(is.na(df$c_reactive_protein)) # 3 NAs.
+#Healthy-weight
+#check if there's NA in CRP column
+
 
 #omit NA
-df <- na.omit(buss3 %>% filter(BMI.weight == "Healthy") %>% select(TPTG:H4A2, c_reactive_protein)) #519
-
+df <- na.omit(buss3 %>% filter(BMI.weight == "Healthy") %>% select(TPTG:H4A2, CRP)) #519
+#sum(is.na(df$CRP)) # 3 NAs.
 #constructing correlation matrix (correlogram)
 M <- cor(df)
 head(round(M,2))
 
 #creating heatmap
-corrplot(M, method="circle", cl.ratio = 0.2, tl.srt = 45)
+corrplot(M, method="circle", cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Healthy weight")
+
+corrplot(M, method="circle", type = "upper", cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Healthy weight")
+
+#14May2024
+df <- na.omit(buss3 %>% filter(BMI.weight == "Healthy") %>% select(L1TG:L6AB, TPTG:L6PN, CRP))
+M <- cor(df)
+head(round(M,2))
+
+corrplot(M, method="circle", cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Healthy weight")
+
+corrplot(M, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Healthy weight")
+```
 
 
+```{r}
+#Obese
+df2 <- na.omit(buss3 %>% filter(BMI.weight == "Obese") %>% select(TPTG:H4A2, CRP))
 
+M2 <- cor(df2)
+head(round(M2,2))
+
+corrplot(M2, method="circle", cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Obese")
+
+#14May2024
+df2 <- na.omit(buss3 %>% filter(BMI.weight == "Obese") %>% select(L1TG:L6AB, TPTG:L6PN, CRP))
+M2 <- cor(df2)
+head(round(M2,2))
+
+corrplot(M2, method="circle", cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Obese")
+
+corrplot(M2, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Obese")
 
 ```
+
+#14May2024 add Glyc info to Bus
+```{r}
+#loading buss metadata from Sam - this has both timepoints & everything.
+#only take what I need 
+complete_buss <- read.csv("BUS_ann_Integrals_140524.csv", header=TRUE)
+dim(complete_buss) #3945 obs - both timepoints. 
+
+# matching complete metadata and buss3 so I can add Glyc to the appropriate individual (sampleID)
+idx<-which(buss3$sampleID %in% complete_buss$sampleID) # 1976
+complete_buss<-complete_buss[which(complete_buss$sampleID %in% buss3$sampleID),]
+idx<-which(complete_buss$sampleID %in% buss3$sampleID)  #1976
+buss3<-buss3[idx,]
+
+complete_buss<-complete_buss[match(buss3$sampleID, complete_buss$sampleID),]
+
+glyc_buss <- complete_buss %>% select("Glyc":"GlycB")
+
+buss4 <- cbind(buss3, glyc_buss)
+dim(buss4) #1976x136
+
+
+write.csv(buss4, file = "Matched_Bus_anno_lipo_w_CRP_Glyc_NM_14052024.csv")
+```
+
+```{r}
+#14May2024
+df <- na.omit(buss4 %>% filter(BMI.weight == "Healthy") %>% select(L1TG:L6AB, TPTG:L6PN, CRP, Glyc, GlycA, GlycB))
+
+df <- na.omit(buss4 %>% filter(BMI.weight == "Healthy") %>% select(V1TG:V5TG, L1PN:L6PN, HDLC))
+
+M <- cor(df)
+head(round(M,2))
+
+corrplot(M, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Healthy weight")
+```
+
+
+#15May2024 - all weights
+##all lipo
+```{r}
+df3 <- na.omit(buss4 %>% select(TPTG:H4A2, CRP, Glyc, GlycA, GlycB, HDLC))
+
+M3 <- cor(df3)
+head(round(M3,2))
+
+corrplot(M3, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.2, mar=c(0,0,1,0), title = "Busselton - all weights")
+
+```
+
+##L1TG:L6AB, TPTG:L6PN
+```{r}
+df4 <- na.omit(buss4 %>% select(L1TG:L6AB, TPTG:L6PN, CRP, Glyc, GlycA, GlycB, HDLC))
+
+M4 <- cor(df4)
+head(round(M4,2))
+
+corrplot(M4, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - all weights")
+
+```
+
+##V1TG:V5TG, L1PN:L6PN
+```{r}
+df5 <- na.omit(buss4 %>% select(V1TG:V5TG, L1PN:L6PN, CRP, Glyc, GlycA, GlycB, HDLC))
+
+M5 <- cor(df5)
+head(round(M5,2))
+
+corrplot(M5, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - all weights")
+
+```
+
+
+#15May2024 - Hw
+##all lipo
+```{r}
+df <- na.omit(buss4 %>% filter(BMI.weight == "Healthy") %>% select(TPTG:H4A2, CRP, Glyc, GlycA, GlycB, HDLC))
+
+M <- cor(df)
+head(round(M,2))
+
+corrplot(M, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.2, mar=c(0,0,1,0), title = "Busselton - Healthy-weight (n = 522)")
+
+```
+
+##L1TG:L6AB, TPTG:L6PN
+```{r}
+df <- na.omit(buss4 %>% filter(BMI.weight == "Healthy") %>% select(L1TG:L6AB, TPTG:L6PN, CRP, Glyc, GlycA, GlycB, HDLC))
+
+M <- cor(df)
+head(round(M,2))
+
+corrplot(M, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Healthy-weight (n = 522)")
+
+```
+
+##V1TG:V5TG, L1PN:L6PN
+```{r}
+df <- na.omit(buss4 %>% filter(BMI.weight == "Healthy") %>% select(V1TG:V5TG, L1PN:L6PN, CRP, Glyc, GlycA, GlycB, HDLC))
+
+M <- cor(df)
+head(round(M,2))
+
+corrplot(M, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Healthy weight (n = 522)")
+
+```
+
+
+#15May2024 - Ow
+##all lipo
+```{r}
+df <- na.omit(buss4 %>% filter(BMI.weight == "Overweight") %>% select(TPTG:H4A2, CRP, Glyc, GlycA, GlycB, HDLC))
+
+M <- cor(df)
+head(round(M,2))
+
+corrplot(M, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.2, mar=c(0,0,1,0), title = "Busselton - Overweight (n = 884)")
+
+```
+
+##L1TG:L6AB, TPTG:L6PN
+```{r}
+df <- na.omit(buss4 %>% filter(BMI.weight == "Overweight") %>% select(L1TG:L6AB, TPTG:L6PN, CRP, Glyc, GlycA, GlycB, HDLC))
+
+M <- cor(df)
+head(round(M,2))
+
+corrplot(M, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Overweight (n = 884)")
+
+```
+
+##V1TG:V5TG, L1PN:L6PN
+```{r}
+df <- na.omit(buss4 %>% filter(BMI.weight == "Overweight") %>% select(V1TG:V5TG, L1PN:L6PN, CRP, Glyc, GlycA, GlycB, HDLC))
+
+M <- cor(df)
+head(round(M,2))
+
+corrplot(M, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Overweight (n = 884)")
+
+```
+
+#15May2024 - Ob
+##all lipo
+```{r}
+df <- na.omit(buss4 %>% filter(BMI.weight == "Obese") %>% select(TPTG:H4A2, CRP, Glyc, GlycA, GlycB, HDLC))
+
+M <- cor(df)
+head(round(M,2))
+
+corrplot(M, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.2, mar=c(0,0,1,0), title = "Busselton - Obese (n = 563)")
+
+```
+
+##L1TG:L6AB, TPTG:L6PN
+```{r}
+df <- na.omit(buss4 %>% filter(BMI.weight == "Obese") %>% select(L1TG:L6AB, TPTG:L6PN, CRP, Glyc, GlycA, GlycB, HDLC))
+
+M <- cor(df)
+head(round(M,2))
+
+corrplot(M, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Obese (n = 563)")
+
+```
+
+##V1TG:V5TG, L1PN:L6PN
+```{r}
+df <- na.omit(buss4 %>% filter(BMI.weight == "Obese") %>% select(V1TG:V5TG, L1PN:L6PN, CRP, Glyc, GlycA, GlycB, HDLC))
+
+M <- cor(df)
+head(round(M,2))
+
+corrplot(M, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Obese (n = 563)")
+
+```
+
+
+
+
+
+
+
 
 
 
