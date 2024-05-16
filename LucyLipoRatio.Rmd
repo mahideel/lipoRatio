@@ -3,6 +3,8 @@ title: "LucyLipoRatio"
 author: "Lucy Grigoroff"
 date: "2024-03-12"
 output: html_document
+editor_options: 
+  chunk_output_type: console
 ---
 
 # Load Data
