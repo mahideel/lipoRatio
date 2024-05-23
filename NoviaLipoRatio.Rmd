@@ -20,12 +20,14 @@ library(mva.plots)
 library(ca)
 library(tidyr)
 library(tidyverse)
+library(corrplot)
+library(GGally)
 ```
 
 
 # Load Data
 ```{r}
-bus_sau2 <- read.csv("~/git/mahideel/lipoRatio/BusT1_Sau_Healthy_DM2_28112023.csv")
+bus_sau2 <- read.csv("/Users/novia/Desktop/Diabetes_Obesity/Busselton/BusT1_Sau_Healthy_DM2_28112023.csv")
 names(bus_sau2)
 ```
 
@@ -40,14 +42,15 @@ abe$L5CE <- abe$L5CH - abe$L5FC
 ```
 
 
-#13May2024 add CRP info to Bus
+#BUSSELTON 
+##13May2024 add CRP info to Bus
 ```{r}
 #loading buss metadata from Sam 
-ann_buss <- read.csv("Anno_t1_MH_new.csv", header=TRUE)
+ann_buss <- read.csv("/Users/novia/Desktop/Diabetes_Obesity/Busselton/Anno_t1_MH_new.csv", header=TRUE)
 dim(ann_buss) #1976 obs
 
 #loading buss lipo from Reika
-buss <- read.csv(file='Busselton_Lipo_290523.csv') 
+buss <- read.csv(file='/Users/novia/Desktop/Diabetes_Obesity/Busselton/Busselton_Lipo_290523.csv') 
 dim(buss) #4292 obs
 
 # matching metadata and lipoprotein 
@@ -93,8 +96,7 @@ buss2$DM[which(buss2$Summary_Type2_Diabetes_idx == 1)] = "DM2"
 
 buss2$comb = gsub("\\s","", paste(buss2$BMI.weight,"_", buss2$DM))
 
-
-write.csv(buss2, file = "Matched_Bus_anno_lipo_allcolumns_NM_13052024.csv")
+#write.csv(buss2, file = "Matched_Bus_anno_lipo_allcolumns_NM_13052024.csv", row.names = F)
 
 buss3 <- buss2 %>% select(TPTG:H4A2, sampleID, age, sex, height, weight, cholesterol, triglycerides, glucose, high_density_lipoprotein, c_reactive_protein, creatinine, bmi, waist, sbp, dbp, bmi_cat, age_cat, BMI.weight, DM, comb)
 
@@ -102,7 +104,8 @@ buss3$cohort = "BUSSELTON"
 names(buss3)[names(buss3) == "c_reactive_protein"] <- "CRP"
 names(buss3)[names(buss3) == "high_density_lipoprotein"] <- "HDLC"
 
-write.csv(buss3, file = "Matched_Bus_anno_lipo_extendedversion_NM_13052024.csv")
+#write.csv(buss3, file = "Matched_Bus_anno_lipo_extendedversion_NM_13052024.csv", row.names = F)
+
 ```
 
 ```{r}
@@ -123,8 +126,6 @@ buss3$L5TotLip <- rowSums(buss3[, c("L5TG", "L5FC", "L5CE", "L5PL")])
 
 ##Corr CRP w lipo
 ```{r}
-library(corrplot)
-
 #Healthy-weight
 #check if there's NA in CRP column
 
@@ -192,9 +193,11 @@ glyc_buss <- complete_buss %>% select("Glyc":"GlycB")
 buss4 <- cbind(buss3, glyc_buss)
 dim(buss4) #1976x136
 
+#write.csv(buss4, file = "Matched_Bus_anno_lipo_w_CRP_Glyc_NM_14052024.csv", row.names=F)
 
-write.csv(buss4, file = "Matched_Bus_anno_lipo_w_CRP_Glyc_NM_14052024.csv")
+buss4 <- read.csv("/Users/novia/Desktop/Diabetes_Obesity/Busselton/Matched_Bus_anno_lipo_w_CRP_Glyc_NM_14052024.csv", header=TRUE)
 ```
+
 
 ```{r}
 #14May2024
@@ -207,6 +210,208 @@ head(round(M,2))
 
 corrplot(M, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.5, mar=c(0,0,1,0), title = "Busselton - Healthy weight")
 ```
+
+
+#23May2024 - all weights
+#renaming Healthy BMI category to Healthy-weight
+```{r}
+buss4$BMI.weight[which(buss4$BMI.weight == "Healthy")] = "Healthy-weight"
+
+#save(buss4, file="Busselton_Final_forPaper2_23May2024.rda")
+
+load("Busselton_Final_forPaper2_23May2024.rda")
+```
+
+##Fig1. Corr heatmap for selected lipo
+```{r}
+df <- na.omit(buss4 %>% select(TPTG:LDPN, VLTG:LDAB, CRP, Glyc))
+
+M <- cor(df)
+
+corrplot(M, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.6, mar=c(0,0,1,0), title = "Busselton - all weights", col=colorRampPalette(c("blue","white","red"))(200))
+
+```
+
+##Fig2. Boxplots for selected lipo
+```{r}
+my_comparisons <- list( c("Healthy-weight", "Overweight"), c("Healthy-weight", "Obese"),c("Overweight", "Obese"))
+
+buss5 <- buss4 %>% filter(BMI.weight != "Underweight")
+
+buss5$BMI.weight <- factor(buss5$BMI.weight , levels=c("Healthy-weight", "Overweight", "Obese"))
+```
+
+### TPTG
+```{r}
+p1= ggboxplot(buss5, x = "BMI.weight", y = "TPTG",
+           color = "BMI.weight", fill = "BMI.weight", alpha=0.4) + 
+  scale_color_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) +
+  scale_fill_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) + 
+  stat_compare_means(comparisons = my_comparisons, label="p.signif") # Add pairwise comparisons p-value
+
+ plot1=p1+ xlab("")
+plot1
+ 
+```
+
+### VLPN
+```{r}
+p2= ggboxplot(buss5, x = "BMI.weight", y = "VLPN",
+           color = "BMI.weight", fill = "BMI.weight", alpha=0.4) + 
+  scale_color_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) +
+  scale_fill_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) + 
+  stat_compare_means(comparisons = my_comparisons, label="p.signif") # Add pairwise comparisons p-value
+ 
+ plot2=p2+ xlab("")
+plot2
+```
+
+
+### IDPN
+```{r}
+p3= ggboxplot(buss5, x = "BMI.weight", y = "IDPN",
+           color = "BMI.weight", fill = "BMI.weight", alpha=0.4) + 
+  scale_color_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) +
+  scale_fill_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) + 
+  stat_compare_means(comparisons = my_comparisons, label="p.signif") # Add pairwise comparisons p-value
+
+ plot3=p3+ xlab("")
+plot3 
+```
+
+
+### LDPN
+```{r}
+p4= ggboxplot(buss5, x = "BMI.weight", y = "LDPN",
+           color = "BMI.weight", fill = "BMI.weight", alpha=0.4) + 
+  scale_color_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) +
+  scale_fill_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) + 
+  stat_compare_means(comparisons = my_comparisons, label="p.signif") # Add pairwise comparisons p-value
+ 
+ plot4=p4+ xlab("")
+ 
+plot4
+```
+
+
+### VLAB
+```{r}
+p5= ggboxplot(buss5, x = "BMI.weight", y = "VLAB",
+           color = "BMI.weight", fill = "BMI.weight", alpha=0.4) + 
+  scale_color_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) +
+  scale_fill_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) + 
+  stat_compare_means(comparisons = my_comparisons, label="p.signif") # Add pairwise comparisons p-value
+
+ plot5=p5+ xlab("")
+ 
+plot5  
+```
+
+
+### IDAB
+```{r}
+p6= ggboxplot(buss5, x = "BMI.weight", y = "IDAB",
+           color = "BMI.weight", fill = "BMI.weight", alpha=0.4) + 
+  scale_color_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) +
+  scale_fill_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) + 
+  stat_compare_means(comparisons = my_comparisons, label="p.signif") # Add pairwise comparisons p-value
+
+plot6=p6 + xlab("")
+plot6  
+```
+
+
+### LDAB
+```{r}
+p7= ggboxplot(buss5, x = "BMI.weight", y = "LDAB",
+           color = "BMI.weight", fill = "BMI.weight", alpha=0.4) + 
+  scale_color_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) +
+  scale_fill_manual(values = c("Healthy-weight"="green4","Overweight" = "orange2","Obese"="red3")) + 
+  stat_compare_means(comparisons = my_comparisons, label="p.signif") # Add pairwise comparisons p-value
+
+plot7=p7+ xlab("")
+
+plot7
+
+```
+
+```{r}
+ggarrange(plot1,plot2,plot3,plot4,plot5,plot6, plot7, widths = c(1,1), common.legend = TRUE, legend = "bottom")
+
+```
+
+
+##Fig3. Parallel coordinates chart 
+```{r}
+tdf <- buss5%>%select(TPTG:H4A2, BMI.weight)
+
+tdf$BMI.weight <- factor(buss5$BMI.weight , levels=c("Healthy-weight", "Overweight", "Obese"))
+
+lcols <- c("#00BFC4", "#F8766D", "#FFC425")
+
+table(tdf$BMI.weight)
+
+lipo_name<-c("CH","TG","PL","PN", "FC","A")
+
+p1 <- list()
+for (l in lipo_name) {
+  tdf1 <-
+    data.frame(
+      Healthy_weight = apply(na.omit(
+        tdf %>% filter(BMI.weight == "Healthy-weight") %>% select(contains(l))
+      ), 2, median),
+      Overweight = apply(na.omit(
+        tdf %>% filter(BMI.weight == "Overweight") %>% select(contains(l))
+      ), 2, median),
+      Obese = apply(na.omit(
+       tdf %>% filter(BMI.weight == "Obese") %>% select(contains(l))
+      ), 2, median)
+    )
+  # re-scale # if using this, make sure to set ggparcoord scale = "globalminmax" so not to double scale
+  for (j in 1:nrow(tdf1)) {
+    tdf1[j, ] <- tdf1[j, ] / max(tdf1[j, ])
+  }
+  
+  tdf1 <- data.frame(t(tdf1))
+  
+  tdf1 <- tdf1 %>%rownames_to_column(var = "Groups")
+  
+  p<-ggparcoord(tdf1,
+    columns = 2:ncol(tdf1), groupColumn = 1, scale = "globalminmax",
+    showPoints = TRUE, 
+    alphaLines = 0.3
+    ) + xlab("") + ylab("") +
+    scale_color_manual(values = lcols) +
+    theme_classic()
+
+  p1_legend<-get_legend(p)    
+  p1_legend<-as_ggplot(p1_legend)   
+  p1[[l]]<-p+theme(legend.position = "none")
+
+  rm(tdf1,p)
+}
+
+library(gridExtra)
+grid.arrange(p1[[1]],p1[[2]],p1[[3]],p1[[4]],p1[[5]],p1[[6]],p1_legend, top=("Busselton"), nrow=3) 
+
+ggarrange(p1[[1]],p1[[2]],p1[[3]],p1[[4]],p1[[5]],p1[[6]], widths = c(1,1), common.legend = TRUE, legend = "bottom", nrow = 6)
+
+```
+
+
+##Fig4. Corr heatmap TPTG, ABA1, Glyc + HDL subfraction
+```{r}
+df1 <- na.omit(buss5 %>% select(TPTG, ABA1, H1TG:H4A2, Glyc, CRP))
+
+M1 <- cor(df1)
+
+corrplot(M1, method="circle", type = "upper", diag = FALSE, cl.ratio = 0.2, tl.cex = 0.6, mar=c(0,0,1,0), title = "Busselton - all weights", col=colorRampPalette(c("blue","white","red"))(200))
+
+```
+
+
+
+
 
 
 #15May2024 - all weights
@@ -915,6 +1120,7 @@ for (i in lipolist){
   abem2 %>% ggplot(aes(x = cohort, y = get(i), fill = BMI.weight))+geom_boxplot()+ylab(i)-> p1
   plot(p1)
 }
+
 
 
 abem2 %>% ggplot(aes(x = cohort, y = TPTG, fill = BMI.weight))+geom_boxplot()
