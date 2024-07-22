@@ -1,0 +1,1727 @@
+---
+title: "Exploring Busselton Lipid"
+author: "nminaee"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r,echo=FALSE, warning=FALSE, message=FALSE}
+library(dplyr)
+library(readr)
+library(reshape2)
+library(ggplot2)
+library(ggrepel)
+library(tibble)
+library(ggpubr)
+library(mva.plots)
+library(ca)
+library(tidyr)
+library(tidyverse)
+library(corrplot)
+library(GGally)
+library(stats)
+library(pheatmap)
+library(cluster)
+library(gridExtra)
+library(ggpubr)
+library(htmlTable)
+library(broom)
+```
+
+
+```{r, echo=FALSE}
+# Create a function to set square aspect ratio
+set_square_aspect_ratio <- function(plot) {
+  plot + theme(aspect.ratio = 1)
+}
+
+
+continuousPalette<- c(
+                        "#0000CC",
+                        "#0000FF",
+                        "#0055FF",
+                        "#00AAFF",
+                        "#00FFFF",
+                        "#2BFFD5",
+                        "#55FFAA",
+                        "#80FF80",
+                        "#AAFF55",
+                        "#D4FF2B",
+                        "#FFFF00",
+                        "#FFAA00",
+                        "#FF5500",
+                        "#FF0000",
+                        "#CC0000")
+
+txt2S <- function(col) {
+  newCol <- lapply(col, function(i) {
+    if (!is.na(i)){
+      i <- abs(as.numeric(i))
+      if (i < 0.05 & i >= 0.01) {"*"
+      } else if (i < 0.01 & i >= 0.001) {
+        "**"
+      } else if (i < 0.001) {
+        "***"
+      } else {
+        ""
+      }
+    } else {
+      NA
+    }
+  })
+  return(unlist(newCol))
+}
+
+
+# Function to perform univariate t-test
+univariate_test <- function(data) {
+  t.test(value ~ group_var, data = data) %>% 
+    broom::tidy()
+}
+
+
+
+perform_stat_tests<-function(tdf_tbl,group = NULL,var, method, tbl1){
+  # Handle missing or infinite values
+  data_pval <- tdf_tbl %>%
+    mutate(across(-{{group}}, ~replace(., is.nan(.) | is.infinite(.), 0)))%>%
+    rename(group = {{group}})%>%
+    dplyr::select(group,var)
+  
+  
+  # Switch between ANOVA and Wilcoxon tests based on the method argument
+  p_model <- switch(method,
+                    "anova" = lapply(data_pval %>% select(-group), function(x) {
+                      aov(x ~ data_pval$group)
+                    }),
+                    "wilcox" = {
+                      if (length(unique(data_pval$group)) > 2) {
+                        stop("Wilcoxon test does not support more than 2 groups naturally.")
+                      } else {
+                        lapply(data_pval %>% select(-group), function(x) {
+                          wilcox.test(x ~ data_pval$group)
+                        })
+                      }
+                    },
+                    stop("Unsupported method type provided")
+  )
+  
+  # Generate summaries of the model results
+  model_summaries <- lapply(p_model, summary)
+  
+  
+  # Extracting results and performing post-hoc tests where applicable
+  summary_list <- list()
+  
+  for(i in names(model_summaries)){
+    variable = data.frame(Variable =i)
+    variable$Pvalue = txt2S(model_summaries[[i]][[1]]['Pr(>F)'][1,])
+    tukey_p<-as.data.frame(TukeyHSD(p_model[[i]])[[1]])
+    tukey_p$comparison<-rownames(tukey_p)
+    tukey_p$`p adj`<-txt2S(tukey_p$`p adj`)
+    tukey_p<-data.frame(t(tukey_p[,c("comparison","p adj")]))
+    colnames(tukey_p)<-tukey_p[1,]
+    tukey_p<-tukey_p[-1,]
+    variable<-cbind(variable,tukey_p)
+    summary_list[[i]]<-variable
+    rm(variable,tukey_p)
+  }
+  
+  # Combine all individual summaries into a single data frame
+  summary_list <- do.call(rbind, summary_list)
+  
+  # Merge the summarized data frame with the existing table `tbl1`
+  tbl1 <- merge(tbl1, summary_list, by = "Variable")
+  
+  return(tbl1)
+}
+```
+
+
+```{r, echo=FALSE, message= FALSE, warning=FALSE}
+load("/Users/novia/Desktop/Diabetes_Obesity/Busselton/LipidMS/Busselton_PLA_MS_Lipids.daE")
+
+lipidData <- Busselton_PLA_MS_Lipids@.Data
+lipidMeta <- Busselton_PLA_MS_Lipids@obsDescr[[1]] # only need this part to retrieve sampleID that has been matched to lipidData; do not use this metadata - use the Busselton metadata
+# only use lipid data, use the Busselton metadata for the metadata. 
+
+l <- cbind(lipidData, lipidMeta)
+
+l <- l %>% select(1:895, sampleID)
+
+rm(Busselton_PLA_MS_Lipids, lipidData, lipidMeta)
+```
+
+
+```{r, echo=FALSE, message= FALSE, warning=FALSE}
+b <- read.csv("/Users/novia/Desktop/Diabetes_Obesity/Busselton/Matched_Bus_anno_lipo_allcolumns_NM_13052024.csv", header = TRUE)
+
+#load("Busselton_Final_forPaper2_23May2024.rda") #buss4 - final lipo data + meta that's used for Paper 2 draft. buss4 is the simplified version of b.  
+# NOTE: b and buss4 sampleID matched (08/07/2024). 
+
+#table(b$Summary_Type2_Diabetes_idx, b$Diabetes_)
+# check if there's any discrepancies between DM and diabetes group.
+### NOTE: Diabetes_ and Summary_Type2_Diabetes give roughly the same number of overall NO DM vs DM. 
+### BUT Diabetes_ = 1 includes uncertain DM1 diagnosis. So here onwards it's safer to use Summary_Type2_Diabetes_idx. 
+### DM column in buss4 reflects Summary_Type2_Diabetes column in b. 
+```
+
+
+```{r, echo=FALSE, message= FALSE, warning=FALSE}
+# selecting only timepoint 1 (T1) samples from lipid data to match lipo data and meta. 
+idx<-which(l$sampleID %in% b$sampleID)
+lipid <- l[which(l$sampleID %in% b$sampleID),]
+lipid <- lipid[match(b$sampleID, lipid$sampleID),]
+
+# checking if matching works
+#table(lipid$sampleID == b$sampleID) # yes 1976 matched. 
+# NA checking
+na_rows <- lipid[!complete.cases(lipid), ] #41 NAs
+
+lipid <- lipid %>% filter(!lipid$sampleID %in% na_rows$sampleID) #lipid data
+#1935
+#sum(is.na(lipid)) #0
+
+lipo <- b %>% filter(!b$sampleID %in% na_rows$sampleID) #lipo data
+
+#table(lipid$sampleID == lipo$sampleID) #1935 Phew!
+
+lipo_names<-colnames(lipo)[1:112]
+lipid_names<-colnames(lipid)[1:895]
+lipid_class<-unique(sub("\\(.*$", "", lipid_names))
+
+combined <- merge(lipid, lipo, by = "sampleID")
+
+combined$taking_lipid_med <- ifelse(grepl("lipid|HMG-CoA|statin", combined$an_med, ignore.case = TRUE), 1, 0)
+combined$taking_any_med <- ifelse(is.na(combined$an_med), 0, 1)
+
+combined <- combined %>% relocate(sampleID,.before = "TPTG")
+
+#save(combined,file="Busselton_LipidMS_matchedwLipo_plusmeds_15Jul2024.rda")
+
+rm(idx, na_rows, b, l, lipid, lipo)
+```
+
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+#load("Busselton_LipidMS_matchedwLipo_plusmeds_15Jul2024.rda")
+```
+
+# Study aim  
+
+This study aims to conduct a comprehensive analysis of lipids in the Busselton Healthy Aging Cohort 
+
+# Cohort
+
+As this is an extension of my previous exploration of the interaction between Obesity and Diabetes via Lipoprotein profiling, I am keeping the cohort focus also on Obesity and Diabetes. 
+
+However, to begin with, to establish a firm understanding in what's happening with the lipids, I'd focus on the healthy (non-diabetic) group to establish a 'baseline' lipid profile. That way I could easily compare and see the changes when I introduce the diabetes condition. 
+
+
+- Healthy weight 
+
+Participants who are non-diabetic (and did not have any other conditions  (Summary_Healthy == 1)) and in healthy-weight BMI range. 
+
+- Obese 
+
+Participants who are non-diabetic (but may have other conditions) and in overweight to obese BMI range. 
+
+
+# Data analysis
+Data analysis will include correlation and clustering analysis. 
+
+```{r, echo=FALSE, message= FALSE, warning=FALSE}
+idx_hty = which(combined$Summary_Healthy==1) #255 #No conditions AND Healthy weight. 
+idx_obs = which(combined$Summary_overweight_idx==1 & combined$Summary_Diabetes_idx==0) #466 #Overweight and Obese and Not Diabetic
+#idx_DM = which(combined$Summary_Diabetes_idx==1) #160 # Diabetic regardless BMI
+
+#Combined_subData<-combined[c(idx_hty,idx_obs,idx_DM),] 
+
+# For table / reporting purpose only 
+Combined_subData<-combined[c(idx_hty,idx_obs),] 
+
+Combined_subData <- Combined_subData%>%
+  mutate(Group = ifelse(Summary_Healthy==1,"Hw",NA),
+         Group = ifelse(Summary_overweight_idx==1,"Ob",Group)) %>%  relocate(Group,.after = bloodno6) %>% relocate(sampleID,.before = "TPTG") 
+
+#Combined_subData %>% select(Group,sex,age,bmi,cholesterol,triglycerides,high_density_lipoprotein,glucose,c_reactive_protein,creatinine,glycated_haemoglobin,sbp,dbp,Summary_Diabetes_idx, taking_lipid_med)  %>% gtsummary::tbl_summary(by = Group, missing = "no") # missing = "no" is so the NA values don't get included in the table everytime. Summary table on hold for now as not sure if it's necessary at this stage.
+
+Combined_subData %>% select(Group,sex,age,bmi, Summary_Diabetes_idx, taking_lipid_med)  %>% gtsummary::tbl_summary(by = Group, missing = "no") 
+
+#idx_hty_taking_meds <- which(Combined_subData$taking_any_med == 1 & Combined_subData$Summary_Healthy ==1) #35 who are deemed super healthy but taking some sort of meds - BUT NOT taking lipid med.
+
+#Combined_subData[idx_hty_taking_meds, ] %>% select(BMI.weight, an_med)
+```
+
+
+## Heatmap
+```{r, echo=FALSE, message= FALSE, warning=FALSE}
+Hw <- combined[idx_hty, ] #255
+Ob <- combined[idx_obs, ] #466 #includes the overweights
+```
+
+### By BMI
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Hw v Ob
+# Load datasets
+data1 <- Hw %>% select(1:895)  
+data2 <- Ob %>% select(1:895) 
+
+# Calculate the correlation matrices
+cor1 <- cor(data1)
+cor2 <- cor(data2)
+
+# Create heatmaps with clustering
+set.seed(123)
+heatmap1 <- pheatmap(cor1, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F, 
+                     main = "Healthy-weight (n = 255)", 
+                     silent = TRUE)
+
+heatmap2 <- pheatmap(cor2, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F,
+                     main = "Obese (n = 466)",
+                     silent = TRUE)
+
+# p1 <- heatmap1$gtable # no need for these 2 anymore but keeping it just in case.
+# p2 <- heatmap2$gtable
+
+# Convert pheatmap objects to ggplot objects
+p1_gg <- ggplotify::as.ggplot(heatmap1)
+p2_gg <- ggplotify::as.ggplot(heatmap2)
+
+
+# Apply the function to both plots
+p1_gg <- set_square_aspect_ratio(p1_gg)
+p2_gg <- set_square_aspect_ratio(p2_gg)
+
+# Arrange the plots side by side using ggarrange
+ggarrange(p1_gg, p2_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+
+```
+
+
+```{r, echo=FALSE}
+# Obesity & Meds
+data2a <- Ob %>% filter(Ob$taking_lipid_med==0) %>% select(1:895) #383   
+data2b <- Ob %>% filter(Ob$taking_lipid_med==1)%>% select(1:895) #83
+
+# Calculate the correlation matrices
+cor2a <- cor(data2a)
+cor2b <- cor(data2b)
+
+# Create heatmaps with clustering
+set.seed(123)
+heatmap2a <- pheatmap(cor2a, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F, 
+                     main = "Obese, No Lipid Meds (n = 383)", 
+                     silent = TRUE)
+
+heatmap2b <- pheatmap(cor2b, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F,
+                     main = "Obese, Taking Lipid Meds (n = 83)",
+                     silent = TRUE)
+
+
+# Convert pheatmap objects to ggplot objects
+p2a_gg <- ggplotify::as.ggplot(heatmap2a)
+p2b_gg <- ggplotify::as.ggplot(heatmap2b)
+
+
+# Apply the function to both plots
+p2a_gg <- set_square_aspect_ratio(p2a_gg)
+p2b_gg <- set_square_aspect_ratio(p2b_gg)
+
+# Arrange the plots side by side using ggarrange
+ggarrange(p2a_gg, p2b_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+```
+
+### By Sex and BMI
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Load datasets (Hw = super Healthy + Healthy weight )
+data3 <- Hw %>% filter(Hw$sex=="M") %>% select(1:895) #144   
+data4 <- Hw %>% filter(Hw$sex=="F") %>% select(1:895) #111
+
+# Calculate the correlation matrices
+cor3 <- cor(data3)
+cor4 <- cor(data4)
+
+# Create heatmaps with clustering and capture them as grobs
+set.seed(123)
+heatmap3 <- pheatmap(cor3, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F, 
+                     main = "Healthy Male", 
+                     silent = TRUE)
+
+heatmap4 <- pheatmap(cor4, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F,
+                     main = "Healthy Female",
+                     silent = TRUE)
+
+# Convert pheatmap objects to ggplot objects
+p3_gg <- ggplotify::as.ggplot(heatmap3)
+p4_gg <- ggplotify::as.ggplot(heatmap4)
+
+
+# Apply the function to both plots
+p3_gg <- set_square_aspect_ratio(p3_gg)
+p4_gg <- set_square_aspect_ratio(p4_gg)
+
+# Arrange the plots side by side using ggarrange
+ggarrange(p3_gg, p4_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Male Hw v Male Ob
+# Load datasets
+data3M <- Hw %>% filter(Hw$sex=="M") %>% select(1:895) #144   
+data4M <- Ob %>% filter(Ob$sex=="M") %>% select(1:895) #206
+
+# Calculate the correlation matrices
+cor3M <- cor(data3M)
+cor4M <- cor(data4M)
+
+# Create heatmaps with clustering and capture them as grobs
+set.seed(123)
+heatmap3M <- pheatmap(cor3M, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F, 
+                     main = "Male Hw", 
+                     silent = TRUE)
+
+heatmap4M <- pheatmap(cor4M, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F,
+                     main = "Male Obese",
+                     silent = TRUE)
+
+# Convert pheatmap objects to ggplot objects
+p3M_gg <- ggplotify::as.ggplot(heatmap3M)
+p4M_gg <- ggplotify::as.ggplot(heatmap4M)
+
+
+# Apply the function to both plots
+p3M_gg <- set_square_aspect_ratio(p3M_gg)
+p4M_gg <- set_square_aspect_ratio(p4M_gg)
+
+# Arrange the plots side by side using ggarrange
+ggarrange(p3M_gg, p4M_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Female Hw v Female Ob
+# Load datasets
+data3F <- Hw %>% filter(Hw$sex=="F") %>% select(1:895) #111   
+data4F <- Ob %>% filter(Ob$sex=="F")%>% select(1:895) #260
+
+# Calculate the correlation matrices
+cor3F <- cor(data3F)
+cor4F <- cor(data4F)
+
+# Create heatmaps with clustering and capture them as grobs
+set.seed(123)
+heatmap3F <- pheatmap(cor3F, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F, 
+                     main = "Female Hw", 
+                     silent = TRUE)
+
+heatmap4F <- pheatmap(cor4F, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F,
+                     main = "Female Obese",
+                     silent = TRUE)
+
+# Convert pheatmap objects to ggplot objects
+p3F_gg <- ggplotify::as.ggplot(heatmap3F)
+p4F_gg <- ggplotify::as.ggplot(heatmap4F)
+
+
+# Apply the function to both plots
+p3F_gg <- set_square_aspect_ratio(p3F_gg)
+p4F_gg <- set_square_aspect_ratio(p4F_gg)
+
+# Arrange the plots side by side using ggarrange
+ggarrange(p3F_gg, p4F_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Male Hw v Female Hw 
+ggarrange(p3M_gg, p3F_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Male Ob v Female Ob
+ggarrange(p4M_gg, p4F_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+```
+
+
+## Clustering (HCA)
+### Hw 
+```{r, echo = FALSE, message=FALSE, warning=FALSE,  fig.width=15, fig.height=15}
+# Using the Busselton Hw lipid dataset
+# Compute the distance matrix using 1 - correlation as the distance metric
+
+dist <- as.dist(1 - cor1)
+
+# Perform hierarchical clustering using the complete method
+hc <- hclust(dist, method = "complete")
+
+# Cut the tree into clusters
+set.seed(123)
+k <- 15
+clusters <- cutree(hc, k = k)
+
+# Retrieve which variables are in each cluster
+clustered_vars1 <- split(names(clusters), clusters)
+
+hc_df <- data.frame(hc$order, hc$labels, clusters)
+hc_df <- hc_df[order(hc_df$clusters),]
+
+hc_df$hc.class <- sub("\\(.*$", "", hc_df$hc.labels)
+
+# Summarize the counts
+data_summary <- hc_df %>%
+  group_by(clusters, hc.class) %>%
+  summarize(count = n())
+
+# setting colours for each cluster 
+data_summary$colour = ""
+data_summary$colour[which(data_summary$hc.class == "CE")] <- "dodgerblue2"
+data_summary$colour[which(data_summary$hc.class == "CER")] <- "#E31A1C"
+data_summary$colour[which(data_summary$hc.class == "DAG")] <- "green4"
+data_summary$colour[which(data_summary$hc.class == "DCER")] <- "#6A3D9A"
+data_summary$colour[which(data_summary$hc.class == "HCER")] <- "#FF7F00"
+data_summary$colour[which(data_summary$hc.class == "LCER")] <- "skyblue2"
+data_summary$colour[which(data_summary$hc.class == "LPC")] <- "gold1"
+data_summary$colour[which(data_summary$hc.class == "PC")] <- "black"
+data_summary$colour[which(data_summary$hc.class == "PG")] <- "#FB9A99"
+data_summary$colour[which(data_summary$hc.class == "SM")] <- "palegreen2"
+data_summary$colour[which(data_summary$hc.class == "TAG")] <- "#CAB2D6"
+data_summary$colour[which(data_summary$hc.class == "LPE")] <- "#FDBF6F"
+data_summary$colour[which(data_summary$hc.class == "LPI")] <- "gray70"
+data_summary$colour[which(data_summary$hc.class == "PE")] <- "khaki2"
+data_summary$colour[which(data_summary$hc.class == "PI")] <- "orchid1"
+data_summary$colour[which(data_summary$hc.class == "PS")] <- "blue1"
+data_summary$colour[which(data_summary$hc.class == "LPG")] <- "maroon"
+data_summary$colour[which(data_summary$hc.class == "MAG")] <- "green"
+data_summary$colour[which(data_summary$hc.class == "FFA")] <- "purple"
+
+# Pie-chart per cluster 
+slicea <- data_summary %>% filter(clusters == 1)
+sliceb <- data_summary %>% filter(clusters == 2)
+slicec <- data_summary %>% filter(clusters == 3)
+sliced <- data_summary %>% filter(clusters == 4)
+slicee <- data_summary %>% filter(clusters == 5)
+slicef <- data_summary %>% filter(clusters == 6)
+sliceg <- data_summary %>% filter(clusters == 7)
+sliceh <- data_summary %>% filter(clusters == 8)
+slicei <- data_summary %>% filter(clusters == 9)
+slicej <- data_summary %>% filter(clusters == 10)
+slicek <- data_summary %>% filter(clusters == 11)
+slicel <- data_summary %>% filter(clusters == 12)
+slicem <- data_summary %>% filter(clusters == 13)
+slicen <- data_summary %>% filter(clusters == 14)
+sliceo <- data_summary %>% filter(clusters == 15)
+
+plot.new()
+par(mfrow=c(3,5)) # 3 rows and 5 columns for plots
+pie(slicea$count, slicea$hc.class, col=slicea$colour, main = "Cluster 1", cex=1)
+pie(sliceb$count, sliceb$hc.class, col=sliceb$colour, main = "Cluster 2", cex=1)
+pie(slicec$count, slicec$hc.class, col=slicec$colour, main = "Cluster 3", cex=1)
+pie(sliced$count, sliced$hc.class, col=sliced$colour, main = "Cluster 4", cex=1)
+pie(slicee$count, slicee$hc.class, col=slicee$colour, main = "Cluster 5", cex=1)
+pie(slicef$count, slicef$hc.class, col=slicef$colour, main = "Cluster 6", cex=1)
+pie(sliceg$count, sliceg$hc.class, col=sliceg$colour, main = "Cluster 7", cex=1)
+pie(sliceh$count, sliceh$hc.class, col=sliceh$colour, main = "Cluster 8", cex=1)
+pie(slicei$count, slicei$hc.class, col=slicei$colour, main = "Cluster 9", cex=1)
+pie(slicej$count, slicej$hc.class, col=slicej$colour, main = "Cluster 10", cex=1)
+pie(slicek$count, slicek$hc.class, col=slicek$colour, main = "Cluster 11", cex=1)
+pie(slicel$count, slicel$hc.class, col=slicel$colour, main = "Cluster 12", cex=1)
+pie(slicem$count, slicem$hc.class, col=slicem$colour, main = "Cluster 13", cex=1)
+pie(slicen$count, slicen$hc.class, col=slicen$colour, main = "Cluster 14", cex=1)
+pie(sliceo$count, sliceo$hc.class, col=sliceo$colour, main = "Cluster 15", cex=1)
+mtext("Lipid Profile - Healthy-weight - 15 clusters", side = 1, line = -2, outer = TRUE)
+par(mfrow=c(1,1)) # to reset the plot margin setting
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# sideChains function
+# Function to extract specific parts
+extract_numbers <- function(strings) {
+  # Initialize an empty list to store the results
+  results <- list()
+  
+  # Loop through each string in the dataset
+  for (i in 1:length(strings)) {
+    if (str_detect(strings[i], "TAG")) {
+      # Extract only the last number for TAG
+      extracted <- str_extract_all(strings[i], "\\d{2}:\\d")
+      extracted <- unlist(extracted)
+      if (length(extracted) > 0) {
+        results[[i]] <- tail(extracted, 1)
+      } else {
+        results[[i]] <- NULL
+      }
+    } else {
+      # Extract both numbers for non-TAG
+      extracted <- str_extract_all(strings[i], "\\d{2}:\\d")
+      extracted <- unlist(extracted)
+      results[[i]] <- extracted
+    }
+  }
+  
+  # Return the results as a list
+  return(results)
+}
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Apply the function to the dataset
+hc_df$hc.sideChains <- extract_numbers(hc_df$hc.labels)
+
+split_list <- function(x) {
+  if (length(x) == 1) {
+    return(tibble(number1 = x[1], number2 = NA))
+  } else if (length(x) == 2) {
+    return(tibble(number1 = x[1], number2 = x[2]))
+  } else {
+    return(tibble(number1 = NA, number2 = NA))
+  }
+}
+
+hc_df <- hc_df %>%
+  mutate(split_result = map(hc_df$hc.sideChains, split_list)) %>%
+  unnest(split_result)
+
+hc_long <- hc_df %>%
+  pivot_longer(
+    cols = c(number1, number2),  # Columns to pivot
+    names_to = "variable",        # New column name for the original column names
+    values_to = "value"           # New column name for the values
+  ) %>%
+  arrange(hc.order, hc.class, variable)  # Optional: arrange for clarity
+
+# Convert hc.sideChains list column to character vector
+hc_long <- hc_long %>%
+  mutate(hc.sideChains = sapply(hc.sideChains, paste, collapse = ", "))
+
+
+# Create scatter plot with facet_wrap
+hc_long %>% filter(!is.na(value)) %>% ggplot(aes(x = hc.class, y = value, color = factor(clusters))) +
+  geom_point() +
+  facet_wrap(~ clusters, scales = "fixed", nrow = 5, ncol = 3) +
+  labs(title = "Healthy-Weight",
+       x = "Lipid Class",
+       y = "Side-chain length", 
+       color = "Clusters") +
+  theme_minimal() +
+  theme(
+    strip.background = element_blank(), # Remove facet strip background
+    strip.text = element_blank(),       # Remove facet strip text
+    axis.title.x = element_text(margin = margin(t = 10)), # Add margin to x-axis title
+    axis.title.y = element_text(margin = margin(r = 10))  # Add margin to y-axis title
+  )
+
+```
+
+### Ob overall
+```{r, echo = FALSE, message=FALSE, warning=FALSE,  fig.width=15, fig.height=15}
+# Using the Busselton Obese lipid dataset
+# Compute the distance matrix using 1 - correlation as the distance metric
+
+dist <- as.dist(1 - cor2)
+
+# Perform hierarchical clustering using the complete method
+hc <- hclust(dist, method = "complete")
+
+# Cut the tree into clusters
+set.seed(123)
+k <- 15
+clusters <- cutree(hc, k = k)
+
+# Retrieve which variables are in each cluster
+clustered_vars2 <- split(names(clusters), clusters)
+#print(clustered_vars)
+
+hc_df <- data.frame(hc$order, hc$labels, clusters)
+hc_df <- hc_df[order(hc_df$clusters),]
+
+hc_df$hc.class <- sub("\\(.*$", "", hc_df$hc.labels)
+
+
+# Summarize the counts
+data_summary <- hc_df %>%
+  group_by(clusters, hc.class) %>%
+  summarize(count = n())
+
+# setting colours for each cluster 
+data_summary$colour = ""
+data_summary$colour[which(data_summary$hc.class == "CE")] <- "dodgerblue2"
+data_summary$colour[which(data_summary$hc.class == "CER")] <- "#E31A1C"
+data_summary$colour[which(data_summary$hc.class == "DAG")] <- "green4"
+data_summary$colour[which(data_summary$hc.class == "DCER")] <- "#6A3D9A"
+data_summary$colour[which(data_summary$hc.class == "HCER")] <- "#FF7F00"
+data_summary$colour[which(data_summary$hc.class == "LCER")] <- "skyblue2"
+data_summary$colour[which(data_summary$hc.class == "LPC")] <- "gold1"
+data_summary$colour[which(data_summary$hc.class == "PC")] <- "black"
+data_summary$colour[which(data_summary$hc.class == "PG")] <- "#FB9A99"
+data_summary$colour[which(data_summary$hc.class == "SM")] <- "palegreen2"
+data_summary$colour[which(data_summary$hc.class == "TAG")] <- "#CAB2D6"
+data_summary$colour[which(data_summary$hc.class == "LPE")] <- "#FDBF6F"
+data_summary$colour[which(data_summary$hc.class == "LPI")] <- "gray70"
+data_summary$colour[which(data_summary$hc.class == "PE")] <- "khaki2"
+data_summary$colour[which(data_summary$hc.class == "PI")] <- "orchid1"
+data_summary$colour[which(data_summary$hc.class == "PS")] <- "blue1"
+data_summary$colour[which(data_summary$hc.class == "LPG")] <- "maroon"
+data_summary$colour[which(data_summary$hc.class == "MAG")] <- "green"
+data_summary$colour[which(data_summary$hc.class == "FFA")] <- "purple"
+
+# Pie-chart per cluster 
+slicea <- data_summary %>% filter(clusters == 1)
+sliceb <- data_summary %>% filter(clusters == 2)
+slicec <- data_summary %>% filter(clusters == 3)
+sliced <- data_summary %>% filter(clusters == 4)
+slicee <- data_summary %>% filter(clusters == 5)
+slicef <- data_summary %>% filter(clusters == 6)
+sliceg <- data_summary %>% filter(clusters == 7)
+sliceh <- data_summary %>% filter(clusters == 8)
+slicei <- data_summary %>% filter(clusters == 9)
+slicej <- data_summary %>% filter(clusters == 10)
+slicek <- data_summary %>% filter(clusters == 11)
+slicel <- data_summary %>% filter(clusters == 12)
+slicem <- data_summary %>% filter(clusters == 13)
+slicen <- data_summary %>% filter(clusters == 14)
+sliceo <- data_summary %>% filter(clusters == 15)
+
+plot.new()
+par(mfrow=c(3,5)) # 3 rows and 5 columns for plots
+pie(slicea$count, slicea$hc.class, col=slicea$colour, main = "Cluster 1", cex=1)
+pie(sliceb$count, sliceb$hc.class, col=sliceb$colour, main = "Cluster 2", cex=1)
+pie(slicec$count, slicec$hc.class, col=slicec$colour, main = "Cluster 3", cex=1)
+pie(sliced$count, sliced$hc.class, col=sliced$colour, main = "Cluster 4", cex=1)
+pie(slicee$count, slicee$hc.class, col=slicee$colour, main = "Cluster 5", cex=1)
+pie(slicef$count, slicef$hc.class, col=slicef$colour, main = "Cluster 6", cex=1)
+pie(sliceg$count, sliceg$hc.class, col=sliceg$colour, main = "Cluster 7", cex=1)
+pie(sliceh$count, sliceh$hc.class, col=sliceh$colour, main = "Cluster 8", cex=1)
+pie(slicei$count, slicei$hc.class, col=slicei$colour, main = "Cluster 9", cex=1)
+pie(slicej$count, slicej$hc.class, col=slicej$colour, main = "Cluster 10", cex=1)
+pie(slicek$count, slicek$hc.class, col=slicek$colour, main = "Cluster 11", cex=1)
+pie(slicel$count, slicel$hc.class, col=slicel$colour, main = "Cluster 12", cex=1)
+pie(slicem$count, slicem$hc.class, col=slicem$colour, main = "Cluster 13", cex=1)
+pie(slicen$count, slicen$hc.class, col=slicen$colour, main = "Cluster 14", cex=1)
+pie(sliceo$count, sliceo$hc.class, col=sliceo$colour, main = "Cluster 15", cex=1)
+mtext("Lipid Profile - Obese - 15 clusters", side = 1, line = -2, outer = TRUE)
+par(mfrow=c(1,1)) # to reset the plot margin setting
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Apply the function to the dataset
+hc_df$hc.sideChains <- extract_numbers(hc_df$hc.labels)
+
+split_list <- function(x) {
+  if (length(x) == 1) {
+    return(tibble(number1 = x[1], number2 = NA))
+  } else if (length(x) == 2) {
+    return(tibble(number1 = x[1], number2 = x[2]))
+  } else {
+    return(tibble(number1 = NA, number2 = NA))
+  }
+}
+
+hc_df <- hc_df %>%
+  mutate(split_result = map(hc_df$hc.sideChains, split_list)) %>%
+  unnest(split_result)
+
+hc_long <- hc_df %>%
+  pivot_longer(
+    cols = c(number1, number2),  # Columns to pivot
+    names_to = "variable",        # New column name for the original column names
+    values_to = "value"           # New column name for the values
+  ) %>%
+  arrange(hc.order, hc.class, variable)  # Optional: arrange for clarity
+
+# Convert hc.sideChains list column to character vector
+hc_long <- hc_long %>%
+  mutate(hc.sideChains = sapply(hc.sideChains, paste, collapse = ", "))
+
+
+# Create scatter plot with facet_wrap
+hc_long %>% filter(!is.na(value)) %>% ggplot(aes(x = hc.class, y = value, color = factor(clusters))) +
+  geom_point() +
+  facet_wrap(~ clusters, scales = "fixed", nrow = 5, ncol = 3) +
+  labs(title = "Obese",
+       x = "Lipid Class",
+       y = "Side-chain length", 
+       color = "Clusters") +
+  theme_minimal() +
+  theme(
+    strip.background = element_blank(), # Remove facet strip background
+    strip.text = element_blank(),       # Remove facet strip text
+    axis.title.x = element_text(margin = margin(t = 10)), # Add margin to x-axis title
+    axis.title.y = element_text(margin = margin(r = 10))  # Add margin to y-axis title
+  )
+
+```
+
+
+### Ob No Lipid Med
+```{r, echo = FALSE, message=FALSE, warning=FALSE,  fig.width=15, fig.height=15}
+# Using the Busselton Obese No Lipid Meds dataset
+# Compute the distance matrix using 1 - correlation as the distance metric
+
+dist <- as.dist(1 - cor2a)
+
+# Perform hierarchical clustering using the complete method
+hc <- hclust(dist, method = "complete")
+
+# Cut the tree into clusters
+set.seed(123)
+k <- 15
+clusters <- cutree(hc, k = k)
+
+# Retrieve which variables are in each cluster
+clustered_vars2a <- split(names(clusters), clusters)
+#print(clustered_vars)
+
+hc_df <- data.frame(hc$order, hc$labels, clusters)
+hc_df <- hc_df[order(hc_df$clusters),]
+
+hc_df$hc.class <- sub("\\(.*$", "", hc_df$hc.labels)
+
+
+# Summarize the counts
+data_summary <- hc_df %>%
+  group_by(clusters, hc.class) %>%
+  summarize(count = n())
+
+# setting colours for each cluster 
+data_summary$colour = ""
+data_summary$colour[which(data_summary$hc.class == "CE")] <- "dodgerblue2"
+data_summary$colour[which(data_summary$hc.class == "CER")] <- "#E31A1C"
+data_summary$colour[which(data_summary$hc.class == "DAG")] <- "green4"
+data_summary$colour[which(data_summary$hc.class == "DCER")] <- "#6A3D9A"
+data_summary$colour[which(data_summary$hc.class == "HCER")] <- "#FF7F00"
+data_summary$colour[which(data_summary$hc.class == "LCER")] <- "skyblue2"
+data_summary$colour[which(data_summary$hc.class == "LPC")] <- "gold1"
+data_summary$colour[which(data_summary$hc.class == "PC")] <- "black"
+data_summary$colour[which(data_summary$hc.class == "PG")] <- "#FB9A99"
+data_summary$colour[which(data_summary$hc.class == "SM")] <- "palegreen2"
+data_summary$colour[which(data_summary$hc.class == "TAG")] <- "#CAB2D6"
+data_summary$colour[which(data_summary$hc.class == "LPE")] <- "#FDBF6F"
+data_summary$colour[which(data_summary$hc.class == "LPI")] <- "gray70"
+data_summary$colour[which(data_summary$hc.class == "PE")] <- "khaki2"
+data_summary$colour[which(data_summary$hc.class == "PI")] <- "orchid1"
+data_summary$colour[which(data_summary$hc.class == "PS")] <- "blue1"
+data_summary$colour[which(data_summary$hc.class == "LPG")] <- "maroon"
+data_summary$colour[which(data_summary$hc.class == "MAG")] <- "green"
+data_summary$colour[which(data_summary$hc.class == "FFA")] <- "purple"
+
+# Pie-chart per cluster 
+slicea <- data_summary %>% filter(clusters == 1)
+sliceb <- data_summary %>% filter(clusters == 2)
+slicec <- data_summary %>% filter(clusters == 3)
+sliced <- data_summary %>% filter(clusters == 4)
+slicee <- data_summary %>% filter(clusters == 5)
+slicef <- data_summary %>% filter(clusters == 6)
+sliceg <- data_summary %>% filter(clusters == 7)
+sliceh <- data_summary %>% filter(clusters == 8)
+slicei <- data_summary %>% filter(clusters == 9)
+slicej <- data_summary %>% filter(clusters == 10)
+slicek <- data_summary %>% filter(clusters == 11)
+slicel <- data_summary %>% filter(clusters == 12)
+slicem <- data_summary %>% filter(clusters == 13)
+slicen <- data_summary %>% filter(clusters == 14)
+sliceo <- data_summary %>% filter(clusters == 15)
+
+plot.new()
+par(mfrow=c(3,5)) # 3 rows and 5 columns for plots
+pie(slicea$count, slicea$hc.class, col=slicea$colour, main = "Cluster 1", cex=1)
+pie(sliceb$count, sliceb$hc.class, col=sliceb$colour, main = "Cluster 2", cex=1)
+pie(slicec$count, slicec$hc.class, col=slicec$colour, main = "Cluster 3", cex=1)
+pie(sliced$count, sliced$hc.class, col=sliced$colour, main = "Cluster 4", cex=1)
+pie(slicee$count, slicee$hc.class, col=slicee$colour, main = "Cluster 5", cex=1)
+pie(slicef$count, slicef$hc.class, col=slicef$colour, main = "Cluster 6", cex=1)
+pie(sliceg$count, sliceg$hc.class, col=sliceg$colour, main = "Cluster 7", cex=1)
+pie(sliceh$count, sliceh$hc.class, col=sliceh$colour, main = "Cluster 8", cex=1)
+pie(slicei$count, slicei$hc.class, col=slicei$colour, main = "Cluster 9", cex=1)
+pie(slicej$count, slicej$hc.class, col=slicej$colour, main = "Cluster 10", cex=1)
+pie(slicek$count, slicek$hc.class, col=slicek$colour, main = "Cluster 11", cex=1)
+pie(slicel$count, slicel$hc.class, col=slicel$colour, main = "Cluster 12", cex=1)
+pie(slicem$count, slicem$hc.class, col=slicem$colour, main = "Cluster 13", cex=1)
+pie(slicen$count, slicen$hc.class, col=slicen$colour, main = "Cluster 14", cex=1)
+pie(sliceo$count, sliceo$hc.class, col=sliceo$colour, main = "Cluster 15", cex=1)
+mtext("Lipid Profile - Obese, No Lipid Meds - 15 clusters", side = 1, line = -2, outer = TRUE)
+par(mfrow=c(1,1)) # to reset the plot margin setting
+``` 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Apply the function to the dataset
+hc_df$hc.sideChains <- extract_numbers(hc_df$hc.labels)
+
+split_list <- function(x) {
+  if (length(x) == 1) {
+    return(tibble(number1 = x[1], number2 = NA))
+  } else if (length(x) == 2) {
+    return(tibble(number1 = x[1], number2 = x[2]))
+  } else {
+    return(tibble(number1 = NA, number2 = NA))
+  }
+}
+
+hc_df <- hc_df %>%
+  mutate(split_result = map(hc_df$hc.sideChains, split_list)) %>%
+  unnest(split_result)
+
+hc_long <- hc_df %>%
+  pivot_longer(
+    cols = c(number1, number2),  # Columns to pivot
+    names_to = "variable",        # New column name for the original column names
+    values_to = "value"           # New column name for the values
+  ) %>%
+  arrange(hc.order, hc.class, variable)  # Optional: arrange for clarity
+
+# Convert hc.sideChains list column to character vector
+hc_long <- hc_long %>%
+  mutate(hc.sideChains = sapply(hc.sideChains, paste, collapse = ", "))
+
+
+# Create scatter plot with facet_wrap
+hc_long %>% filter(!is.na(value)) %>% ggplot(aes(x = hc.class, y = value, color = factor(clusters))) +
+  geom_point() +
+  facet_wrap(~ clusters, scales = "fixed", nrow = 5, ncol = 3) +
+  labs(title = "Obese NOT taking Lipid meds",
+       x = "Lipid Class",
+       y = "Side-chain length", 
+       color = "Clusters") +
+  theme_minimal() +
+  theme(
+    strip.background = element_blank(), # Remove facet strip background
+    strip.text = element_blank(),       # Remove facet strip text
+    axis.title.x = element_text(margin = margin(t = 10)), # Add margin to x-axis title
+    axis.title.y = element_text(margin = margin(r = 10))  # Add margin to y-axis title
+  )
+
+```
+
+
+
+### Ob Taking Lipid Meds
+```{r, echo = FALSE, message=FALSE, warning=FALSE,  fig.width=15, fig.height=15}
+# Using the Busselton Obese Yes Lipid Meds dataset
+# Compute the distance matrix using 1 - correlation as the distance metric
+#dist_matrix <- as.dist(1 - abs(corr_matrix))
+dist <- as.dist(1 - cor2b)
+
+# Perform hierarchical clustering using the complete method
+hc <- hclust(dist, method = "complete")
+
+# Cut the tree into clusters
+set.seed(123)
+k <- 15
+clusters <- cutree(hc, k = k)
+
+# Retrieve which variables are in each cluster
+clustered_vars2b <- split(names(clusters), clusters)
+#print(clustered_vars)
+
+hc_df <- data.frame(hc$order, hc$labels, clusters)
+hc_df <- hc_df[order(hc_df$clusters),]
+
+hc_df$hc.class <- sub("\\(.*$", "", hc_df$hc.labels)
+
+
+# Summarize the counts
+data_summary <- hc_df %>%
+  group_by(clusters, hc.class) %>%
+  summarize(count = n())
+
+# setting colours for each cluster 
+data_summary$colour = ""
+data_summary$colour[which(data_summary$hc.class == "CE")] <- "dodgerblue2"
+data_summary$colour[which(data_summary$hc.class == "CER")] <- "#E31A1C"
+data_summary$colour[which(data_summary$hc.class == "DAG")] <- "green4"
+data_summary$colour[which(data_summary$hc.class == "DCER")] <- "#6A3D9A"
+data_summary$colour[which(data_summary$hc.class == "HCER")] <- "#FF7F00"
+data_summary$colour[which(data_summary$hc.class == "LCER")] <- "skyblue2"
+data_summary$colour[which(data_summary$hc.class == "LPC")] <- "gold1"
+data_summary$colour[which(data_summary$hc.class == "PC")] <- "black"
+data_summary$colour[which(data_summary$hc.class == "PG")] <- "#FB9A99"
+data_summary$colour[which(data_summary$hc.class == "SM")] <- "palegreen2"
+data_summary$colour[which(data_summary$hc.class == "TAG")] <- "#CAB2D6"
+data_summary$colour[which(data_summary$hc.class == "LPE")] <- "#FDBF6F"
+data_summary$colour[which(data_summary$hc.class == "LPI")] <- "gray70"
+data_summary$colour[which(data_summary$hc.class == "PE")] <- "khaki2"
+data_summary$colour[which(data_summary$hc.class == "PI")] <- "orchid1"
+data_summary$colour[which(data_summary$hc.class == "PS")] <- "blue1"
+data_summary$colour[which(data_summary$hc.class == "LPG")] <- "maroon"
+data_summary$colour[which(data_summary$hc.class == "MAG")] <- "green"
+data_summary$colour[which(data_summary$hc.class == "FFA")] <- "purple"
+
+# Pie-chart per cluster 
+slicea <- data_summary %>% filter(clusters == 1)
+sliceb <- data_summary %>% filter(clusters == 2)
+slicec <- data_summary %>% filter(clusters == 3)
+sliced <- data_summary %>% filter(clusters == 4)
+slicee <- data_summary %>% filter(clusters == 5)
+slicef <- data_summary %>% filter(clusters == 6)
+sliceg <- data_summary %>% filter(clusters == 7)
+sliceh <- data_summary %>% filter(clusters == 8)
+slicei <- data_summary %>% filter(clusters == 9)
+slicej <- data_summary %>% filter(clusters == 10)
+slicek <- data_summary %>% filter(clusters == 11)
+slicel <- data_summary %>% filter(clusters == 12)
+slicem <- data_summary %>% filter(clusters == 13)
+slicen <- data_summary %>% filter(clusters == 14)
+sliceo <- data_summary %>% filter(clusters == 15)
+
+plot.new()
+par(mfrow=c(3,5)) # 3 rows and 5 columns for plots
+pie(slicea$count, slicea$hc.class, col=slicea$colour, main = "Cluster 1", cex=1)
+pie(sliceb$count, sliceb$hc.class, col=sliceb$colour, main = "Cluster 2", cex=1)
+pie(slicec$count, slicec$hc.class, col=slicec$colour, main = "Cluster 3", cex=1)
+pie(sliced$count, sliced$hc.class, col=sliced$colour, main = "Cluster 4", cex=1)
+pie(slicee$count, slicee$hc.class, col=slicee$colour, main = "Cluster 5", cex=1)
+pie(slicef$count, slicef$hc.class, col=slicef$colour, main = "Cluster 6", cex=1)
+pie(sliceg$count, sliceg$hc.class, col=sliceg$colour, main = "Cluster 7", cex=1)
+pie(sliceh$count, sliceh$hc.class, col=sliceh$colour, main = "Cluster 8", cex=1)
+pie(slicei$count, slicei$hc.class, col=slicei$colour, main = "Cluster 9", cex=1)
+pie(slicej$count, slicej$hc.class, col=slicej$colour, main = "Cluster 10", cex=1)
+pie(slicek$count, slicek$hc.class, col=slicek$colour, main = "Cluster 11", cex=1)
+pie(slicel$count, slicel$hc.class, col=slicel$colour, main = "Cluster 12", cex=1)
+pie(slicem$count, slicem$hc.class, col=slicem$colour, main = "Cluster 13", cex=1)
+pie(slicen$count, slicen$hc.class, col=slicen$colour, main = "Cluster 14", cex=1)
+pie(sliceo$count, sliceo$hc.class, col=sliceo$colour, main = "Cluster 15", cex=1)
+mtext("Lipid Profile - Obese, Taking Lipid Meds - 15 clusters", side = 1, line = -2, outer = TRUE)
+par(mfrow=c(1,1)) # to reset the plot margin setting
+``` 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Apply the function to the dataset
+hc_df$hc.sideChains <- extract_numbers(hc_df$hc.labels)
+
+split_list <- function(x) {
+  if (length(x) == 1) {
+    return(tibble(number1 = x[1], number2 = NA))
+  } else if (length(x) == 2) {
+    return(tibble(number1 = x[1], number2 = x[2]))
+  } else {
+    return(tibble(number1 = NA, number2 = NA))
+  }
+}
+
+hc_df <- hc_df %>%
+  mutate(split_result = map(hc_df$hc.sideChains, split_list)) %>%
+  unnest(split_result)
+
+hc_long <- hc_df %>%
+  pivot_longer(
+    cols = c(number1, number2),  # Columns to pivot
+    names_to = "variable",        # New column name for the original column names
+    values_to = "value"           # New column name for the values
+  ) %>%
+  arrange(hc.order, hc.class, variable)  # Optional: arrange for clarity
+
+# Convert hc.sideChains list column to character vector
+hc_long <- hc_long %>%
+  mutate(hc.sideChains = sapply(hc.sideChains, paste, collapse = ", "))
+
+
+# Create scatter plot with facet_wrap
+hc_long %>% filter(!is.na(value)) %>% ggplot(aes(x = hc.class, y = value, color = factor(clusters))) +
+  geom_point() +
+  facet_wrap(~ clusters, scales = "fixed", nrow = 5, ncol = 3) +
+  labs(title = "Obese and taking Lipid Meds",
+       x = "Lipid Class",
+       y = "Side-chain length", 
+       color = "Clusters") +
+  theme_minimal() +
+  theme(
+    strip.background = element_blank(), # Remove facet strip background
+    strip.text = element_blank(),       # Remove facet strip text
+    axis.title.x = element_text(margin = margin(t = 10)), # Add margin to x-axis title
+    axis.title.y = element_text(margin = margin(r = 10))  # Add margin to y-axis title
+  )
+
+```
+
+### Hw Male 
+```{r, echo = FALSE, message=FALSE, warning=FALSE,  fig.width=15, fig.height=15}
+# Using the Busselton Hw lipid dataset
+# Compute the distance matrix using 1 - correlation as the distance metric
+
+dist <- as.dist(1 - cor3)
+
+# Perform hierarchical clustering using the complete method
+hc <- hclust(dist, method = "complete")
+
+# Cut the tree into clusters
+set.seed(123)
+k <- 15
+clusters <- cutree(hc, k = k)
+
+# Retrieve which variables are in each cluster
+clustered_vars3 <- split(names(clusters), clusters)
+
+hc_df <- data.frame(hc$order, hc$labels, clusters)
+hc_df <- hc_df[order(hc_df$clusters),]
+
+hc_df$hc.class <- sub("\\(.*$", "", hc_df$hc.labels)
+
+
+# Summarize the counts
+data_summary <- hc_df %>%
+  group_by(clusters, hc.class) %>%
+  summarize(count = n())
+
+# setting colours for each cluster 
+data_summary$colour = ""
+data_summary$colour[which(data_summary$hc.class == "CE")] <- "dodgerblue2"
+data_summary$colour[which(data_summary$hc.class == "CER")] <- "#E31A1C"
+data_summary$colour[which(data_summary$hc.class == "DAG")] <- "green4"
+data_summary$colour[which(data_summary$hc.class == "DCER")] <- "#6A3D9A"
+data_summary$colour[which(data_summary$hc.class == "HCER")] <- "#FF7F00"
+data_summary$colour[which(data_summary$hc.class == "LCER")] <- "skyblue2"
+data_summary$colour[which(data_summary$hc.class == "LPC")] <- "gold1"
+data_summary$colour[which(data_summary$hc.class == "PC")] <- "black"
+data_summary$colour[which(data_summary$hc.class == "PG")] <- "#FB9A99"
+data_summary$colour[which(data_summary$hc.class == "SM")] <- "palegreen2"
+data_summary$colour[which(data_summary$hc.class == "TAG")] <- "#CAB2D6"
+data_summary$colour[which(data_summary$hc.class == "LPE")] <- "#FDBF6F"
+data_summary$colour[which(data_summary$hc.class == "LPI")] <- "gray70"
+data_summary$colour[which(data_summary$hc.class == "PE")] <- "khaki2"
+data_summary$colour[which(data_summary$hc.class == "PI")] <- "orchid1"
+data_summary$colour[which(data_summary$hc.class == "PS")] <- "blue1"
+data_summary$colour[which(data_summary$hc.class == "LPG")] <- "maroon"
+data_summary$colour[which(data_summary$hc.class == "MAG")] <- "green"
+data_summary$colour[which(data_summary$hc.class == "FFA")] <- "purple"
+
+# Pie-chart per cluster 
+slicea <- data_summary %>% filter(clusters == 1)
+sliceb <- data_summary %>% filter(clusters == 2)
+slicec <- data_summary %>% filter(clusters == 3)
+sliced <- data_summary %>% filter(clusters == 4)
+slicee <- data_summary %>% filter(clusters == 5)
+slicef <- data_summary %>% filter(clusters == 6)
+sliceg <- data_summary %>% filter(clusters == 7)
+sliceh <- data_summary %>% filter(clusters == 8)
+slicei <- data_summary %>% filter(clusters == 9)
+slicej <- data_summary %>% filter(clusters == 10)
+slicek <- data_summary %>% filter(clusters == 11)
+slicel <- data_summary %>% filter(clusters == 12)
+slicem <- data_summary %>% filter(clusters == 13)
+slicen <- data_summary %>% filter(clusters == 14)
+sliceo <- data_summary %>% filter(clusters == 15)
+
+plot.new()
+par(mfrow=c(3,5)) # 3 rows and 5 columns for plots
+pie(slicea$count, slicea$hc.class, col=slicea$colour, main = "Cluster 1", cex=1)
+pie(sliceb$count, sliceb$hc.class, col=sliceb$colour, main = "Cluster 2", cex=1)
+pie(slicec$count, slicec$hc.class, col=slicec$colour, main = "Cluster 3", cex=1)
+pie(sliced$count, sliced$hc.class, col=sliced$colour, main = "Cluster 4", cex=1)
+pie(slicee$count, slicee$hc.class, col=slicee$colour, main = "Cluster 5", cex=1)
+pie(slicef$count, slicef$hc.class, col=slicef$colour, main = "Cluster 6", cex=1)
+pie(sliceg$count, sliceg$hc.class, col=sliceg$colour, main = "Cluster 7", cex=1)
+pie(sliceh$count, sliceh$hc.class, col=sliceh$colour, main = "Cluster 8", cex=1)
+pie(slicei$count, slicei$hc.class, col=slicei$colour, main = "Cluster 9", cex=1)
+pie(slicej$count, slicej$hc.class, col=slicej$colour, main = "Cluster 10", cex=1)
+pie(slicek$count, slicek$hc.class, col=slicek$colour, main = "Cluster 11", cex=1)
+pie(slicel$count, slicel$hc.class, col=slicel$colour, main = "Cluster 12", cex=1)
+pie(slicem$count, slicem$hc.class, col=slicem$colour, main = "Cluster 13", cex=1)
+pie(slicen$count, slicen$hc.class, col=slicen$colour, main = "Cluster 14", cex=1)
+pie(sliceo$count, sliceo$hc.class, col=sliceo$colour, main = "Cluster 15", cex=1)
+mtext("Lipid Profile - Healthy Male", side = 1, line = -2, outer = TRUE)
+par(mfrow=c(1,1)) # to reset the plot margin setting
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Apply the function to the dataset
+hc_df$hc.sideChains <- extract_numbers(hc_df$hc.labels)
+
+split_list <- function(x) {
+  if (length(x) == 1) {
+    return(tibble(number1 = x[1], number2 = NA))
+  } else if (length(x) == 2) {
+    return(tibble(number1 = x[1], number2 = x[2]))
+  } else {
+    return(tibble(number1 = NA, number2 = NA))
+  }
+}
+
+hc_df <- hc_df %>%
+  mutate(split_result = map(hc_df$hc.sideChains, split_list)) %>%
+  unnest(split_result)
+
+hc_long <- hc_df %>%
+  pivot_longer(
+    cols = c(number1, number2),  # Columns to pivot
+    names_to = "variable",        # New column name for the original column names
+    values_to = "value"           # New column name for the values
+  ) %>%
+  arrange(hc.order, hc.class, variable)  # Optional: arrange for clarity
+
+# Convert hc.sideChains list column to character vector
+hc_long <- hc_long %>%
+  mutate(hc.sideChains = sapply(hc.sideChains, paste, collapse = ", "))
+
+
+# Create scatter plot with facet_wrap
+hc_long %>% filter(!is.na(value)) %>% ggplot(aes(x = hc.class, y = value, color = factor(clusters))) +
+  geom_point() +
+  facet_wrap(~ clusters, scales = "fixed", nrow = 5, ncol = 3) +
+  labs(title = "Healthy-weight MALE",
+       x = "Lipid Class",
+       y = "Side-chain length", 
+       color = "Clusters") +
+  theme_minimal() +
+  theme(
+    strip.background = element_blank(), # Remove facet strip background
+    strip.text = element_blank(),       # Remove facet strip text
+    axis.title.x = element_text(margin = margin(t = 10)), # Add margin to x-axis title
+    axis.title.y = element_text(margin = margin(r = 10))  # Add margin to y-axis title
+  )
+
+```
+
+
+### Hw Female 
+```{r, echo = FALSE, message=FALSE, warning=FALSE,  fig.width=15, fig.height=15}
+# Using the Busselton Hw lipid dataset
+# Compute the distance matrix using 1 - correlation as the distance metric
+#dist_matrix <- as.dist(1 - abs(corr_matrix))
+dist <- as.dist(1 - cor4)
+
+# Perform hierarchical clustering using the complete method
+hc <- hclust(dist, method = "complete")
+
+# Cut the tree into clusters
+set.seed(123)
+k <- 15
+clusters <- cutree(hc, k = k)
+
+# Retrieve which variables are in each cluster
+clustered_vars4 <- split(names(clusters), clusters)
+
+hc_df <- data.frame(hc$order, hc$labels, clusters)
+hc_df <- hc_df[order(hc_df$clusters),]
+
+hc_df$hc.class <- sub("\\(.*$", "", hc_df$hc.labels)
+
+
+# Summarize the counts
+data_summary <- hc_df %>%
+  group_by(clusters, hc.class) %>%
+  summarize(count = n())
+
+# setting colours for each cluster 
+data_summary$colour = ""
+data_summary$colour[which(data_summary$hc.class == "CE")] <- "dodgerblue2"
+data_summary$colour[which(data_summary$hc.class == "CER")] <- "#E31A1C"
+data_summary$colour[which(data_summary$hc.class == "DAG")] <- "green4"
+data_summary$colour[which(data_summary$hc.class == "DCER")] <- "#6A3D9A"
+data_summary$colour[which(data_summary$hc.class == "HCER")] <- "#FF7F00"
+data_summary$colour[which(data_summary$hc.class == "LCER")] <- "skyblue2"
+data_summary$colour[which(data_summary$hc.class == "LPC")] <- "gold1"
+data_summary$colour[which(data_summary$hc.class == "PC")] <- "black"
+data_summary$colour[which(data_summary$hc.class == "PG")] <- "#FB9A99"
+data_summary$colour[which(data_summary$hc.class == "SM")] <- "palegreen2"
+data_summary$colour[which(data_summary$hc.class == "TAG")] <- "#CAB2D6"
+data_summary$colour[which(data_summary$hc.class == "LPE")] <- "#FDBF6F"
+data_summary$colour[which(data_summary$hc.class == "LPI")] <- "gray70"
+data_summary$colour[which(data_summary$hc.class == "PE")] <- "khaki2"
+data_summary$colour[which(data_summary$hc.class == "PI")] <- "orchid1"
+data_summary$colour[which(data_summary$hc.class == "PS")] <- "blue1"
+data_summary$colour[which(data_summary$hc.class == "LPG")] <- "maroon"
+data_summary$colour[which(data_summary$hc.class == "MAG")] <- "green"
+data_summary$colour[which(data_summary$hc.class == "FFA")] <- "purple"
+
+# Pie-chart per cluster 
+slicea <- data_summary %>% filter(clusters == 1)
+sliceb <- data_summary %>% filter(clusters == 2)
+slicec <- data_summary %>% filter(clusters == 3)
+sliced <- data_summary %>% filter(clusters == 4)
+slicee <- data_summary %>% filter(clusters == 5)
+slicef <- data_summary %>% filter(clusters == 6)
+sliceg <- data_summary %>% filter(clusters == 7)
+sliceh <- data_summary %>% filter(clusters == 8)
+slicei <- data_summary %>% filter(clusters == 9)
+slicej <- data_summary %>% filter(clusters == 10)
+slicek <- data_summary %>% filter(clusters == 11)
+slicel <- data_summary %>% filter(clusters == 12)
+slicem <- data_summary %>% filter(clusters == 13)
+slicen <- data_summary %>% filter(clusters == 14)
+sliceo <- data_summary %>% filter(clusters == 15)
+
+plot.new()
+par(mfrow=c(3,5)) # 3 rows and 5 columns for plots
+pie(slicea$count, slicea$hc.class, col=slicea$colour, main = "Cluster 1", cex=1)
+pie(sliceb$count, sliceb$hc.class, col=sliceb$colour, main = "Cluster 2", cex=1)
+pie(slicec$count, slicec$hc.class, col=slicec$colour, main = "Cluster 3", cex=1)
+pie(sliced$count, sliced$hc.class, col=sliced$colour, main = "Cluster 4", cex=1)
+pie(slicee$count, slicee$hc.class, col=slicee$colour, main = "Cluster 5", cex=1)
+pie(slicef$count, slicef$hc.class, col=slicef$colour, main = "Cluster 6", cex=1)
+pie(sliceg$count, sliceg$hc.class, col=sliceg$colour, main = "Cluster 7", cex=1)
+pie(sliceh$count, sliceh$hc.class, col=sliceh$colour, main = "Cluster 8", cex=1)
+pie(slicei$count, slicei$hc.class, col=slicei$colour, main = "Cluster 9", cex=1)
+pie(slicej$count, slicej$hc.class, col=slicej$colour, main = "Cluster 10", cex=1)
+pie(slicek$count, slicek$hc.class, col=slicek$colour, main = "Cluster 11", cex=1)
+pie(slicel$count, slicel$hc.class, col=slicel$colour, main = "Cluster 12", cex=1)
+pie(slicem$count, slicem$hc.class, col=slicem$colour, main = "Cluster 13", cex=1)
+pie(slicen$count, slicen$hc.class, col=slicen$colour, main = "Cluster 14", cex=1)
+pie(sliceo$count, sliceo$hc.class, col=sliceo$colour, main = "Cluster 15", cex=1)
+mtext("Lipid Profile - Healthy Female", side = 1, line = -2, outer = TRUE)
+par(mfrow=c(1,1)) # to reset the plot margin setting
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Apply the function to the dataset
+hc_df$hc.sideChains <- extract_numbers(hc_df$hc.labels)
+
+split_list <- function(x) {
+  if (length(x) == 1) {
+    return(tibble(number1 = x[1], number2 = NA))
+  } else if (length(x) == 2) {
+    return(tibble(number1 = x[1], number2 = x[2]))
+  } else {
+    return(tibble(number1 = NA, number2 = NA))
+  }
+}
+
+hc_df <- hc_df %>%
+  mutate(split_result = map(hc_df$hc.sideChains, split_list)) %>%
+  unnest(split_result)
+
+hc_long <- hc_df %>%
+  pivot_longer(
+    cols = c(number1, number2),  # Columns to pivot
+    names_to = "variable",        # New column name for the original column names
+    values_to = "value"           # New column name for the values
+  ) %>%
+  arrange(hc.order, hc.class, variable)  # Optional: arrange for clarity
+
+# Convert hc.sideChains list column to character vector
+hc_long <- hc_long %>%
+  mutate(hc.sideChains = sapply(hc.sideChains, paste, collapse = ", "))
+
+
+# Create scatter plot with facet_wrap
+hc_long %>% filter(!is.na(value)) %>% ggplot(aes(x = hc.class, y = value, color = factor(clusters))) +
+  geom_point() +
+  facet_wrap(~ clusters, scales = "fixed", nrow = 5, ncol = 3) +
+  labs(title = "Healthy-weight FEMALE",
+       x = "Lipid Class",
+       y = "Side-chain length", 
+       color = "Clusters") +
+  theme_minimal() +
+  theme(
+    strip.background = element_blank(), # Remove facet strip background
+    strip.text = element_blank(),       # Remove facet strip text
+    axis.title.x = element_text(margin = margin(t = 10)), # Add margin to x-axis title
+    axis.title.y = element_text(margin = margin(r = 10))  # Add margin to y-axis title
+  )
+
+```
+
+### Ob Male
+```{r, echo = FALSE, message=FALSE, warning=FALSE,  fig.width=15, fig.height=15}
+# Using the Busselton Ob lipid dataset
+# Compute the distance matrix using 1 - correlation as the distance metric
+#dist_matrix <- as.dist(1 - abs(corr_matrix))
+dist <- as.dist(1 - cor4M)
+
+# Perform hierarchical clustering using the complete method
+hc <- hclust(dist, method = "complete")
+
+# Cut the tree into clusters
+set.seed(123)
+k <- 15
+clusters <- cutree(hc, k = k)
+
+# Retrieve which variables are in each cluster
+clustered_vars4M <- split(names(clusters), clusters)
+
+hc_df <- data.frame(hc$order, hc$labels, clusters)
+hc_df <- hc_df[order(hc_df$clusters),]
+
+hc_df$hc.class <- sub("\\(.*$", "", hc_df$hc.labels)
+
+
+# Summarize the counts
+data_summary <- hc_df %>%
+  group_by(clusters, hc.class) %>%
+  summarize(count = n())
+
+# setting colours for each cluster 
+data_summary$colour = ""
+data_summary$colour[which(data_summary$hc.class == "CE")] <- "dodgerblue2"
+data_summary$colour[which(data_summary$hc.class == "CER")] <- "#E31A1C"
+data_summary$colour[which(data_summary$hc.class == "DAG")] <- "green4"
+data_summary$colour[which(data_summary$hc.class == "DCER")] <- "#6A3D9A"
+data_summary$colour[which(data_summary$hc.class == "HCER")] <- "#FF7F00"
+data_summary$colour[which(data_summary$hc.class == "LCER")] <- "skyblue2"
+data_summary$colour[which(data_summary$hc.class == "LPC")] <- "gold1"
+data_summary$colour[which(data_summary$hc.class == "PC")] <- "black"
+data_summary$colour[which(data_summary$hc.class == "PG")] <- "#FB9A99"
+data_summary$colour[which(data_summary$hc.class == "SM")] <- "palegreen2"
+data_summary$colour[which(data_summary$hc.class == "TAG")] <- "#CAB2D6"
+data_summary$colour[which(data_summary$hc.class == "LPE")] <- "#FDBF6F"
+data_summary$colour[which(data_summary$hc.class == "LPI")] <- "gray70"
+data_summary$colour[which(data_summary$hc.class == "PE")] <- "khaki2"
+data_summary$colour[which(data_summary$hc.class == "PI")] <- "orchid1"
+data_summary$colour[which(data_summary$hc.class == "PS")] <- "blue1"
+data_summary$colour[which(data_summary$hc.class == "LPG")] <- "maroon"
+data_summary$colour[which(data_summary$hc.class == "MAG")] <- "green"
+data_summary$colour[which(data_summary$hc.class == "FFA")] <- "purple"
+
+# Pie-chart per cluster 
+slicea <- data_summary %>% filter(clusters == 1)
+sliceb <- data_summary %>% filter(clusters == 2)
+slicec <- data_summary %>% filter(clusters == 3)
+sliced <- data_summary %>% filter(clusters == 4)
+slicee <- data_summary %>% filter(clusters == 5)
+slicef <- data_summary %>% filter(clusters == 6)
+sliceg <- data_summary %>% filter(clusters == 7)
+sliceh <- data_summary %>% filter(clusters == 8)
+slicei <- data_summary %>% filter(clusters == 9)
+slicej <- data_summary %>% filter(clusters == 10)
+slicek <- data_summary %>% filter(clusters == 11)
+slicel <- data_summary %>% filter(clusters == 12)
+slicem <- data_summary %>% filter(clusters == 13)
+slicen <- data_summary %>% filter(clusters == 14)
+sliceo <- data_summary %>% filter(clusters == 15)
+
+plot.new()
+par(mfrow=c(3,5)) # 3 rows and 5 columns for plots
+pie(slicea$count, slicea$hc.class, col=slicea$colour, main = "Cluster 1", cex=1)
+pie(sliceb$count, sliceb$hc.class, col=sliceb$colour, main = "Cluster 2", cex=1)
+pie(slicec$count, slicec$hc.class, col=slicec$colour, main = "Cluster 3", cex=1)
+pie(sliced$count, sliced$hc.class, col=sliced$colour, main = "Cluster 4", cex=1)
+pie(slicee$count, slicee$hc.class, col=slicee$colour, main = "Cluster 5", cex=1)
+pie(slicef$count, slicef$hc.class, col=slicef$colour, main = "Cluster 6", cex=1)
+pie(sliceg$count, sliceg$hc.class, col=sliceg$colour, main = "Cluster 7", cex=1)
+pie(sliceh$count, sliceh$hc.class, col=sliceh$colour, main = "Cluster 8", cex=1)
+pie(slicei$count, slicei$hc.class, col=slicei$colour, main = "Cluster 9", cex=1)
+pie(slicej$count, slicej$hc.class, col=slicej$colour, main = "Cluster 10", cex=1)
+pie(slicek$count, slicek$hc.class, col=slicek$colour, main = "Cluster 11", cex=1)
+pie(slicel$count, slicel$hc.class, col=slicel$colour, main = "Cluster 12", cex=1)
+pie(slicem$count, slicem$hc.class, col=slicem$colour, main = "Cluster 13", cex=1)
+pie(slicen$count, slicen$hc.class, col=slicen$colour, main = "Cluster 14", cex=1)
+pie(sliceo$count, sliceo$hc.class, col=sliceo$colour, main = "Cluster 15", cex=1)
+mtext("Lipid Profile - Obese Male - 15 clusters", side = 1, line = -2, outer = TRUE)
+par(mfrow=c(1,1)) # to reset the plot margin setting
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Apply the function to the dataset
+hc_df$hc.sideChains <- extract_numbers(hc_df$hc.labels)
+
+split_list <- function(x) {
+  if (length(x) == 1) {
+    return(tibble(number1 = x[1], number2 = NA))
+  } else if (length(x) == 2) {
+    return(tibble(number1 = x[1], number2 = x[2]))
+  } else {
+    return(tibble(number1 = NA, number2 = NA))
+  }
+}
+
+hc_df <- hc_df %>%
+  mutate(split_result = map(hc_df$hc.sideChains, split_list)) %>%
+  unnest(split_result)
+
+hc_long <- hc_df %>%
+  pivot_longer(
+    cols = c(number1, number2),  # Columns to pivot
+    names_to = "variable",        # New column name for the original column names
+    values_to = "value"           # New column name for the values
+  ) %>%
+  arrange(hc.order, hc.class, variable)  # Optional: arrange for clarity
+
+# Convert hc.sideChains list column to character vector
+hc_long <- hc_long %>%
+  mutate(hc.sideChains = sapply(hc.sideChains, paste, collapse = ", "))
+
+
+# Create scatter plot with facet_wrap
+hc_long %>% filter(!is.na(value)) %>% ggplot(aes(x = hc.class, y = value, color = factor(clusters))) +
+  geom_point() +
+  facet_wrap(~ clusters, scales = "fixed", nrow = 5, ncol = 3) +
+  labs(title = "Obese MALE",
+       x = "Lipid Class",
+       y = "Side-chain length", 
+       color = "Clusters") +
+  theme_minimal() +
+  theme(
+    strip.background = element_blank(), # Remove facet strip background
+    strip.text = element_blank(),       # Remove facet strip text
+    axis.title.x = element_text(margin = margin(t = 10)), # Add margin to x-axis title
+    axis.title.y = element_text(margin = margin(r = 10))  # Add margin to y-axis title
+  )
+
+```
+
+
+### Ob Female
+```{r, echo = FALSE, message=FALSE, warning=FALSE,  fig.width=15, fig.height=15}
+# Using the Busselton Ob lipid dataset
+# Compute the distance matrix using 1 - correlation as the distance metric
+#dist_matrix <- as.dist(1 - abs(corr_matrix))
+dist <- as.dist(1 - cor4F)
+
+# Perform hierarchical clustering using the complete method
+hc <- hclust(dist, method = "complete")
+
+# Cut the tree into clusters
+set.seed(123)
+k <- 15
+clusters <- cutree(hc, k = k)
+
+# Retrieve which variables are in each cluster
+clustered_vars4F <- split(names(clusters), clusters)
+
+hc_df <- data.frame(hc$order, hc$labels, clusters)
+hc_df <- hc_df[order(hc_df$clusters),]
+
+hc_df$hc.class <- sub("\\(.*$", "", hc_df$hc.labels)
+
+
+# Summarize the counts
+data_summary <- hc_df %>%
+  group_by(clusters, hc.class) %>%
+  summarize(count = n())
+
+# setting colours for each cluster 
+data_summary$colour = ""
+data_summary$colour[which(data_summary$hc.class == "CE")] <- "dodgerblue2"
+data_summary$colour[which(data_summary$hc.class == "CER")] <- "#E31A1C"
+data_summary$colour[which(data_summary$hc.class == "DAG")] <- "green4"
+data_summary$colour[which(data_summary$hc.class == "DCER")] <- "#6A3D9A"
+data_summary$colour[which(data_summary$hc.class == "HCER")] <- "#FF7F00"
+data_summary$colour[which(data_summary$hc.class == "LCER")] <- "skyblue2"
+data_summary$colour[which(data_summary$hc.class == "LPC")] <- "gold1"
+data_summary$colour[which(data_summary$hc.class == "PC")] <- "black"
+data_summary$colour[which(data_summary$hc.class == "PG")] <- "#FB9A99"
+data_summary$colour[which(data_summary$hc.class == "SM")] <- "palegreen2"
+data_summary$colour[which(data_summary$hc.class == "TAG")] <- "#CAB2D6"
+data_summary$colour[which(data_summary$hc.class == "LPE")] <- "#FDBF6F"
+data_summary$colour[which(data_summary$hc.class == "LPI")] <- "gray70"
+data_summary$colour[which(data_summary$hc.class == "PE")] <- "khaki2"
+data_summary$colour[which(data_summary$hc.class == "PI")] <- "orchid1"
+data_summary$colour[which(data_summary$hc.class == "PS")] <- "blue1"
+data_summary$colour[which(data_summary$hc.class == "LPG")] <- "maroon"
+data_summary$colour[which(data_summary$hc.class == "MAG")] <- "green"
+data_summary$colour[which(data_summary$hc.class == "FFA")] <- "purple"
+
+# Pie-chart per cluster 
+slicea <- data_summary %>% filter(clusters == 1)
+sliceb <- data_summary %>% filter(clusters == 2)
+slicec <- data_summary %>% filter(clusters == 3)
+sliced <- data_summary %>% filter(clusters == 4)
+slicee <- data_summary %>% filter(clusters == 5)
+slicef <- data_summary %>% filter(clusters == 6)
+sliceg <- data_summary %>% filter(clusters == 7)
+sliceh <- data_summary %>% filter(clusters == 8)
+slicei <- data_summary %>% filter(clusters == 9)
+slicej <- data_summary %>% filter(clusters == 10)
+slicek <- data_summary %>% filter(clusters == 11)
+slicel <- data_summary %>% filter(clusters == 12)
+slicem <- data_summary %>% filter(clusters == 13)
+slicen <- data_summary %>% filter(clusters == 14)
+sliceo <- data_summary %>% filter(clusters == 15)
+
+plot.new()
+par(mfrow=c(3,5)) # 3 rows and 5 columns for plots
+pie(slicea$count, slicea$hc.class, col=slicea$colour, main = "Cluster 1", cex=1)
+pie(sliceb$count, sliceb$hc.class, col=sliceb$colour, main = "Cluster 2", cex=1)
+pie(slicec$count, slicec$hc.class, col=slicec$colour, main = "Cluster 3", cex=1)
+pie(sliced$count, sliced$hc.class, col=sliced$colour, main = "Cluster 4", cex=1)
+pie(slicee$count, slicee$hc.class, col=slicee$colour, main = "Cluster 5", cex=1)
+pie(slicef$count, slicef$hc.class, col=slicef$colour, main = "Cluster 6", cex=1)
+pie(sliceg$count, sliceg$hc.class, col=sliceg$colour, main = "Cluster 7", cex=1)
+pie(sliceh$count, sliceh$hc.class, col=sliceh$colour, main = "Cluster 8", cex=1)
+pie(slicei$count, slicei$hc.class, col=slicei$colour, main = "Cluster 9", cex=1)
+pie(slicej$count, slicej$hc.class, col=slicej$colour, main = "Cluster 10", cex=1)
+pie(slicek$count, slicek$hc.class, col=slicek$colour, main = "Cluster 11", cex=1)
+pie(slicel$count, slicel$hc.class, col=slicel$colour, main = "Cluster 12", cex=1)
+pie(slicem$count, slicem$hc.class, col=slicem$colour, main = "Cluster 13", cex=1)
+pie(slicen$count, slicen$hc.class, col=slicen$colour, main = "Cluster 14", cex=1)
+pie(sliceo$count, sliceo$hc.class, col=sliceo$colour, main = "Cluster 15", cex=1)
+mtext("Lipid Profile - Obese Female - 15 clusters", side = 1, line = -2, outer = TRUE)
+par(mfrow=c(1,1)) # to reset the plot margin setting
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Apply the function to the dataset
+hc_df$hc.sideChains <- extract_numbers(hc_df$hc.labels)
+
+split_list <- function(x) {
+  if (length(x) == 1) {
+    return(tibble(number1 = x[1], number2 = NA))
+  } else if (length(x) == 2) {
+    return(tibble(number1 = x[1], number2 = x[2]))
+  } else {
+    return(tibble(number1 = NA, number2 = NA))
+  }
+}
+
+hc_df <- hc_df %>%
+  mutate(split_result = map(hc_df$hc.sideChains, split_list)) %>%
+  unnest(split_result)
+
+hc_long <- hc_df %>%
+  pivot_longer(
+    cols = c(number1, number2),  # Columns to pivot
+    names_to = "variable",        # New column name for the original column names
+    values_to = "value"           # New column name for the values
+  ) %>%
+  arrange(hc.order, hc.class, variable)  # Optional: arrange for clarity
+
+# Convert hc.sideChains list column to character vector
+hc_long <- hc_long %>%
+  mutate(hc.sideChains = sapply(hc.sideChains, paste, collapse = ", "))
+
+
+# Create scatter plot with facet_wrap
+hc_long %>% filter(!is.na(value)) %>% ggplot(aes(x = hc.class, y = value, color = factor(clusters))) +
+  geom_point() +
+  facet_wrap(~ clusters, scales = "fixed", nrow = 5, ncol = 3) +
+  labs(title = "Obese FEMALE",
+       x = "Lipid Class",
+       y = "Side-chain length", 
+       color = "Clusters") +
+  theme_minimal() +
+  theme(
+    strip.background = element_blank(), # Remove facet strip background
+    strip.text = element_blank(),       # Remove facet strip text
+    axis.title.x = element_text(margin = margin(t = 10)), # Add margin to x-axis title
+    axis.title.y = element_text(margin = margin(r = 10))  # Add margin to y-axis title
+  )
+
+```
+
+
+## PCA
+```{r,echo=FALSE, warning=FALSE,fig.width=10,fig.height=10,eval=FALSE}
+library(gghalves)
+library(cowplot)
+library(ggforce)
+
+tdf<-Combined_subData%>%
+  dplyr::select(Group,sex,lipid_names)
+
+#tdf<-tdf[-unique(which(is.na(tdf),arr.ind = T)[,1]),]
+
+mod1<-PCA(tdf%>%dplyr::select(!Group:sex))
+
+#make scores plot
+plotScores(mod1,optns = list(plotTitle = "PCA Scores Plot - by BMI Group", size = 2, alpha = 0.5, color = tdf$Group, colorTitle = "BMI Group", theme = theme(legend.position = "bottom")))
+
+plotScores(mod1,optns = list(plotTitle = "PCA Scores Plot by Sex", size = 2, alpha = 0.5, color = tdf$sex, colorTitle = "Sex", theme = theme(legend.position = "bottom")))
+
+
+tdfM <- tdf%>%dplyr::filter(sex=="M")
+
+mod1M <-PCA(tdfM%>%dplyr::select(!Group:sex))
+
+plotScores(mod1M,optns = list(plotTitle = "PCA Scores Plot - MALES only - by BMI Group", size = 2, alpha = 0.5, color = tdfM$Group, colorTitle = "BMI Group", theme = theme(legend.position = "bottom")))
+
+
+tdfF <- tdf%>%dplyr::filter(sex=="F")
+
+mod1F <-PCA(tdfF%>%dplyr::select(!Group:sex))
+
+plotScores(mod1F,optns = list(plotTitle = "PCA Scores Plot - FEMALES only - by BMI Group", size = 2, alpha = 0.5, color = tdfF$Group, colorTitle = "BMI Group", theme = theme(legend.position = "bottom")))
+
+# data.frame(Combined_subData%>%dplyr::select(Group,sex),mod1$data$scores)%>%
+#   pivot_longer(cols = !Group:sex,
+#                names_to = "PC",
+#                values_to = "score")%>%
+#   ggplot(aes(x = Group, y = score))+
+#   geom_half_violin(aes(x = Group,y = score),side = "l",position = "identity")+
+#   geom_half_violin(aes(x = Group,y = score,fill = sex,alpha = 0.5),side = "r",position = "identity")+
+#   theme_bw()+
+#     facet_wrap_paginate(~PC,scales = "free_y")
+
+
+# p<-list()
+#   
+# for(i in 1:ncol(mod1$data$loadings)){
+# txt<-paste0("PC ",i," (",round(mod1$data$pcSum$`Proportion of Variance`[i],1),"%)")
+#   
+#   s1<-data.frame(score =mod1$data$scores[,i],
+#                  Group = Combined_subData%>%select(Group),
+#                  Sex = Combined_subData%>%select(sex))%>%
+#     ggplot(aes(x = factor(Group),
+#                y = score,
+#                fill = factor(Group)))+
+#   geom_half_violin(aes(x = Group,y = score),side = "l",position = "identity")+
+#     geom_half_violin(aes(x = Group,y = score,fill = sex,alpha = 0.5),side = "r",position = "identity")+scale_alpha_continuous(guide=FALSE)+
+#     labs(title = "PCA Scores",x = "Group/Sex",y = txt, fill = "Group")+
+#     theme_bw()+
+#     theme(legend.position = "bottom",
+#           plot.background = element_rect(fill = "transparent", colour = NA),
+#           plot.margin=unit(c(0,0,0,0), "cm"),
+#           axis.text.y = element_text(size = 12,color = "black",family = "Times New Roman"),
+#           axis.text.x = element_text(size = 12,color = "black",family = "Times New Roman"))+
+#     theme(legend.key.size = unit(0.2,"cm"),
+#                legend.title = element_text(size = 6),
+#                legend.box = "vertical")
+
+  
+#l1<-plotLoadings(mod1,optns = list(PCi = i))
+# l1<-plotLoadings(mod1)
+# data.frame(lipid_names, x = l1$data$loadings[, i])%>%
+#      mutate(class = factor(sapply(strsplit(lipid_names,".",fixed = TRUE),"[",1)))%>%
+#      ggplot(aes(x = x,y = class,label =lipid_names))+
+#      geom_text(size = 4,angle = 60)+
+#      labs(title ="", subtitle = "Loadings", x =  paste0("PC ",i, "(",round(mod1$data$pcSum$`Proportion of Variance`[i],1),"%)"),y = "Lipid Class",caption = "")+
+#      theme(
+#        plot.background = element_rect(fill = "transparent", colour = NA),
+#        plot.margin=unit(c(0,0,0,0), "pt"),
+#        axis.text.y = element_text(size = 6,color = "black",family = "Times New Roman")
+#        )+
+#      theme_bw()+theme(legend.position = "bottom")->l1
+# 
+# p[[i]]<-plot_grid(s1,l1,align = "v", nrow = 2,rel_heights = c(1/3,2/3))
+
+#}
+
+#p
+
+#s1
+
+```
+
+
+
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis', include=FALSE}
+### Lipids summary table - htmlTable on hold for now - more for supp mat
+
+Combined_subData%>%
+  dplyr::select(Group,lipid_names)%>%
+      group_by(Group) %>%
+      summarise(across(where(is.numeric), 
+                       list(mean = ~mean(., na.rm = TRUE),
+                            sd = ~sd(., na.rm = TRUE)), 
+                       .names = "{.col}__{.fn}")) %>%
+      pivot_longer(cols = !c(Group), names_to = "Variable", values_to = "Value")%>%
+      separate(Variable, into = c("Variable", "Statistic"), sep = "__")%>%
+      pivot_wider(names_from = "Statistic",values_from = "Value")%>%
+      mutate(values = paste0(round(mean,2)," ± ",round(sd,2)))%>%
+      select(!mean:sd)%>%
+      pivot_wider(names_from = Group,values_from = values)->tbl1
+
+
+tbl1<-perform_stat_tests(Combined_subData,group = "Group",var = lipid_names,method = "anova",tbl1)
+
+htmlTable(tbl1)
+#write.csv(tbl1, file = "Lipid Summary Table.csv", row.names = FALSE)
+```
