@@ -223,11 +223,11 @@ However, to begin with, to establish a firm understanding in what's happening wi
 
 - Healthy weight 
 
-Participants who are non-diabetic (and did not have any other conditions  (Summary_Healthy == 1)) and in healthy-weight BMI range. 
+Participants who are non-diabetic (and did not have any other conditions (Summary_Healthy == 1)) and have below 30 BMI range (ie includes those who are overweight as per WHO BMI index)
 
 - Obese 
 
-Participants who are non-diabetic (but may have other conditions) and in overweight to obese BMI range. 
+Participants who are non-diabetic (but may have other conditions) and in obese BMI range. 
 
 
 # Data analysis
@@ -235,7 +235,7 @@ Data analysis will include correlation and clustering analysis.
 
 ```{r, echo=FALSE, message= FALSE, warning=FALSE}
 idx_hty = which(combined$Summary_Healthy==1) #255 #No conditions AND Healthy weight. 
-idx_obs = which(combined$Summary_overweight_idx==1 & combined$Summary_Diabetes_idx==0) #466 #Overweight and Obese and Not Diabetic
+idx_obs = which(combined$Summary_overweight_idx==1 & combined$Summary_Diabetes_idx==0) #466 #Obese and Not Diabetic
 #idx_DM = which(combined$Summary_Diabetes_idx==1) #160 # Diabetic regardless BMI
 
 #Combined_subData<-combined[c(idx_hty,idx_obs,idx_DM),] 
@@ -246,6 +246,7 @@ Combined_subData<-combined[c(idx_hty,idx_obs),]
 Combined_subData <- Combined_subData%>%
   mutate(Group = ifelse(Summary_Healthy==1,"Hw",NA),
          Group = ifelse(Summary_overweight_idx==1,"Ob",Group)) %>%  relocate(Group,.after = bloodno6) %>% relocate(sampleID,.before = "TPTG") 
+Combined_subData <- Combined_subData %>% mutate(obese01 = ifelse(Summary_Healthy == 1, 0, 1))
 
 #Combined_subData %>% select(Group,sex,age,bmi,cholesterol,triglycerides,high_density_lipoprotein,glucose,c_reactive_protein,creatinine,glycated_haemoglobin,sbp,dbp,Summary_Diabetes_idx, taking_lipid_med)  %>% gtsummary::tbl_summary(by = Group, missing = "no") # missing = "no" is so the NA values don't get included in the table everytime. Summary table on hold for now as not sure if it's necessary at this stage.
 
@@ -1607,7 +1608,7 @@ hc_long %>% filter(!is.na(value)) %>% ggplot(aes(x = hc.class, y = value, color 
 
 
 ## PCA
-```{r,echo=FALSE, warning=FALSE,fig.width=10,fig.height=10,eval=FALSE}
+```{r,echo=FALSE, warning=FALSE,fig.width=10,fig.height=10}
 library(gghalves)
 library(cowplot)
 library(ggforce)
@@ -1638,19 +1639,7 @@ mod1F <-PCA(tdfF%>%dplyr::select(!Group:sex))
 
 plotScores(mod1F,optns = list(plotTitle = "PCA Scores Plot - FEMALES only - by BMI Group", size = 2, alpha = 0.5, color = tdfF$Group, colorTitle = "BMI Group", theme = theme(legend.position = "bottom")))
 
-# data.frame(Combined_subData%>%dplyr::select(Group,sex),mod1$data$scores)%>%
-#   pivot_longer(cols = !Group:sex,
-#                names_to = "PC",
-#                values_to = "score")%>%
-#   ggplot(aes(x = Group, y = score))+
-#   geom_half_violin(aes(x = Group,y = score),side = "l",position = "identity")+
-#   geom_half_violin(aes(x = Group,y = score,fill = sex,alpha = 0.5),side = "r",position = "identity")+
-#   theme_bw()+
-#     facet_wrap_paginate(~PC,scales = "free_y")
-
-
-# p<-list()
-#   
+ 
 # for(i in 1:ncol(mod1$data$loadings)){
 # txt<-paste0("PC ",i," (",round(mod1$data$pcSum$`Proportion of Variance`[i],1),"%)")
 #   
@@ -1672,31 +1661,137 @@ plotScores(mod1F,optns = list(plotTitle = "PCA Scores Plot - FEMALES only - by B
 #     theme(legend.key.size = unit(0.2,"cm"),
 #                legend.title = element_text(size = 6),
 #                legend.box = "vertical")
-
-  
-#l1<-plotLoadings(mod1,optns = list(PCi = i))
-# l1<-plotLoadings(mod1)
-# data.frame(lipid_names, x = l1$data$loadings[, i])%>%
-#      mutate(class = factor(sapply(strsplit(lipid_names,".",fixed = TRUE),"[",1)))%>%
-#      ggplot(aes(x = x,y = class,label =lipid_names))+
-#      geom_text(size = 4,angle = 60)+
-#      labs(title ="", subtitle = "Loadings", x =  paste0("PC ",i, "(",round(mod1$data$pcSum$`Proportion of Variance`[i],1),"%)"),y = "Lipid Class",caption = "")+
-#      theme(
-#        plot.background = element_rect(fill = "transparent", colour = NA),
-#        plot.margin=unit(c(0,0,0,0), "pt"),
-#        axis.text.y = element_text(size = 6,color = "black",family = "Times New Roman")
-#        )+
-#      theme_bw()+theme(legend.position = "bottom")->l1
+# }
 # 
-# p[[i]]<-plot_grid(s1,l1,align = "v", nrow = 2,rel_heights = c(1/3,2/3))
-
-#}
-
-#p
-
-#s1
+# s1
 
 ```
+
+
+## Unadjusted UnivariateLogistic Regression
+
+688 out of 895 lipids are significant at 0.05.
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Create the data frame with your data
+df <- Combined_subData %>% select(1:895, obese01)  
+
+# Replace brackets with underscores in column names
+names(df) <- gsub("[()]", "_", names(df))
+names(df) <- gsub(":", "_", names(df))
+
+# Remove trailing underscores
+names(df) <- sub("_$", "", names(df))
+
+# check
+#names(df)
+
+# Identify the response variable and predictor variables
+response <- "obese01"
+predictors <- names(df)[!names(df) %in% response]
+
+# Initialize a list to store the results
+results <- list()
+
+# Loop through each predictor
+for (predictor in predictors) {
+  # Fit the logistic regression model using backticks around predictor
+  formula <- as.formula(paste(response, "~ `", predictor, "`", sep=""))
+  model <- glm(formula, data = df, family = binomial)
+  
+  # Store the summary of the model in the results list
+  results[[predictor]] <- summary(model)
+}
+
+# Access the summary of a specific model
+#results[["CE_14_0"]]
+
+# Initialize a data frame to store significant results
+significant_results <- data.frame(Predictor = character(), P_Value = numeric(), stringsAsFactors = FALSE)
+
+# Loop through the results to extract significant predictors
+for (predictor in predictors) {
+  # Get the summary of the model
+  summary_model <- results[[predictor]]
+  
+  # Get the p-value of the predictor
+  p_value <- summary_model$coefficients[2, 4]
+  
+  # Check if the predictor is significant (p < 0.05)
+  if (p_value < 0.05) {
+    # Add the significant predictor and its p-value to the data frame
+    significant_results <- rbind(significant_results, data.frame(Predictor = predictor, P_Value = p_value))
+  }
+}
+
+# Print the table of significant predictors and their p-values
+#print(significant_results) #688 lipids are significant
+
+```
+
+
+## Adjusted for sex Univaiate Logistic Regression
+
+676 out of 895 lipids are significant after adjusting for sex. 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+df <- Combined_subData %>% select(1:895, sex, obese01)  
+
+# Replace brackets with underscores
+names(df) <- gsub("[()]", "_", names(df))
+names(df) <- gsub(":", "_", names(df))
+
+# Remove trailing underscores
+names(df) <- sub("_$", "", names(df))
+
+
+# Identify the response variable and predictor variables
+response <- "obese01"
+covariate <- "sex"
+predictors <- names(df)[!names(df) %in% c(response, covariate)]
+
+# Initialize a list to store the results
+results <- list()
+
+# Loop through each predictor
+for (predictor in predictors) {
+  # Fit the logistic regression model using backticks around predictor and covariate
+  formula <- as.formula(paste(response, "~ `", predictor, "` + `", covariate, "`", sep=""))
+  model <- glm(formula, data = df, family = binomial)
+  
+  # Store the summary of the model in the results list
+  results[[predictor]] <- summary(model)
+}
+
+# Initialize a data frame to store significant results
+adj_significant_results <- data.frame(Predictor = character(), P_Value = numeric(), stringsAsFactors = FALSE)
+
+# Loop through the results to extract significant predictors
+for (predictor in predictors) {
+  # Get the summary of the model
+  summary_model <- results[[predictor]]
+  
+  # Get the p-value of the predictor (second row, fourth column)
+  p_value <- summary_model$coefficients[2, 4]
+  
+  # Check if the predictor is significant (p < 0.05)
+  if (p_value < 0.05) {
+    # Add the significant predictor and its p-value to the data frame
+    adj_significant_results <- rbind(adj_significant_results, data.frame(Predictor = predictor, P_Value = p_value))
+  }
+}
+
+# Print the table of significant predictors and their p-values
+#print(adj_significant_results) #676 lipids
+
+```
+
+Next step:
+
+- To have a good look at the adjusted univariate results 
+- Pick the significant ones and 
+
+
 
 
 

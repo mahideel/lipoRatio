@@ -1,0 +1,677 @@
+---
+title: "Busselton Lipo-Lipid - DM Split"
+author: "nminaee"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+  
+---
+
+<style type="text/css">
+.main-container {
+  max-width: 1200px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, comment = "")
+```
+
+```{r}
+library(dplyr)
+library(readr)
+library(reshape2)
+library(ggplot2)
+library(ggrepel)
+library(tibble)
+library(ggpubr)
+library(mva.plots)
+library(ca)
+library(tidyr)
+library(tidyverse)
+library(corrplot)
+library(GGally)
+library(stats)
+library(pheatmap)
+library(cluster)
+library(gridExtra)
+library(ggpubr)
+library(htmlTable)
+library(broom)
+```
+
+
+```{r}
+# Create a function to set square aspect ratio
+set_square_aspect_ratio <- function(plot) {
+  plot + theme(aspect.ratio = 1)
+}
+
+
+continuousPalette<- c(
+                        "#0000CC",
+                        "#0000FF",
+                        "#0055FF",
+                        "#00AAFF",
+                        "#00FFFF",
+                        "#2BFFD5",
+                        "#55FFAA",
+                        "#80FF80",
+                        "#AAFF55",
+                        "#D4FF2B",
+                        "#FFFF00",
+                        "#FFAA00",
+                        "#FF5500",
+                        "#FF0000",
+                        "#CC0000")
+
+txt2S <- function(col) {
+  newCol <- lapply(col, function(i) {
+    if (!is.na(i)){
+      i <- abs(as.numeric(i))
+      if (i < 0.05 & i >= 0.01) {"*"
+      } else if (i < 0.01 & i >= 0.001) {
+        "**"
+      } else if (i < 0.001) {
+        "***"
+      } else {
+        ""
+      }
+    } else {
+      NA
+    }
+  })
+  return(unlist(newCol))
+}
+
+
+# Function to perform univariate t-test
+univariate_test <- function(data) {
+  t.test(value ~ group_var, data = data) %>% 
+    broom::tidy()
+}
+
+
+
+perform_stat_tests<-function(tdf_tbl,group = NULL,var, method, tbl1){
+  # Handle missing or infinite values
+  data_pval <- tdf_tbl %>%
+    mutate(across(-{{group}}, ~replace(., is.nan(.) | is.infinite(.), 0)))%>%
+    rename(group = {{group}})%>%
+    dplyr::select(group,var)
+  
+  
+  # Switch between ANOVA and Wilcoxon tests based on the method argument
+  p_model <- switch(method,
+                    "anova" = lapply(data_pval %>% select(-group), function(x) {
+                      aov(x ~ data_pval$group)
+                    }),
+                    "wilcox" = {
+                      if (length(unique(data_pval$group)) > 2) {
+                        stop("Wilcoxon test does not support more than 2 groups naturally.")
+                      } else {
+                        lapply(data_pval %>% select(-group), function(x) {
+                          wilcox.test(x ~ data_pval$group)
+                        })
+                      }
+                    },
+                    stop("Unsupported method type provided")
+  )
+  
+  # Generate summaries of the model results
+  model_summaries <- lapply(p_model, summary)
+  
+  
+  # Extracting results and performing post-hoc tests where applicable
+  summary_list <- list()
+  
+  for(i in names(model_summaries)){
+    variable = data.frame(Variable =i)
+    variable$Pvalue = txt2S(model_summaries[[i]][[1]]['Pr(>F)'][1,])
+    tukey_p<-as.data.frame(TukeyHSD(p_model[[i]])[[1]])
+    tukey_p$comparison<-rownames(tukey_p)
+    tukey_p$`p adj`<-txt2S(tukey_p$`p adj`)
+    tukey_p<-data.frame(t(tukey_p[,c("comparison","p adj")]))
+    colnames(tukey_p)<-tukey_p[1,]
+    tukey_p<-tukey_p[-1,]
+    variable<-cbind(variable,tukey_p)
+    summary_list[[i]]<-variable
+    rm(variable,tukey_p)
+  }
+  
+  # Combine all individual summaries into a single data frame
+  summary_list <- do.call(rbind, summary_list)
+  
+  # Merge the summarized data frame with the existing table `tbl1`
+  tbl1 <- merge(tbl1, summary_list, by = "Variable")
+  
+  return(tbl1)
+}
+```
+
+## Load the data
+
+Note: I only use Busselton's timepoint 1 and T2DM group for diabetes (T1DM is excluded). 
+
+### Lipo
+
+Metadata: Anno_t1_MH_new.csv
+
+Lipoprotein data: Lipo_bus_230724.csv 
+
+(both from Sam L)
+```{r}
+#loading buss metadata for Timepoint 1 from Sam 
+Annotation <- read.csv("/Users/novia/Desktop/Diabetes_Obesity/Busselton/Anno_t1_MH_new.csv", header=TRUE) # t1 = timepoint 1
+
+#loading latest buss lipo data from Sam (23/07/2024)
+Lipo<- read.csv(file='/Users/novia/Desktop/Diabetes_Obesity/Busselton/Lipo_bus_230724.csv') #3945 obs - T1 and T2 but I'll only use T1
+
+# matching metadata and lipoprotein 
+idx<-which(Annotation$sampleID %in% Lipo$sampleID) # 1976
+Annotation<-Annotation[which(Annotation$sampleID %in% Lipo$sampleID),]
+
+idx<-which(Lipo$sampleID %in% Annotation$sampleID)  #1976
+Lipo<-Lipo[idx,]
+
+Annotation<-Annotation[match(Lipo$sampleID, Annotation$sampleID),]
+
+
+#rm(idx)
+```
+
+
+### Lipids
+
+Metadata: the same as Lipo above
+
+Lipid data: Busselton_PLA_MS_Lipids.daE
+
+```{r}
+da <- local(get(load("/Users/novia/Desktop/Diabetes_Obesity/Busselton/LipidMS/Busselton_PLA_MS_Lipids.daE")))
+Lipids<-data.frame(apply(da@.Data,2,as.numeric))
+Lipids_ANN<-da@obsDescr[[1]]
+idx<-match(Annotation$sampleID,Lipids_ANN$sampleID)
+
+Lipids<-Lipids[which(Lipids_ANN$sampleID %in% Annotation$sampleID),] #1976 
+Lipids_ANN<-Lipids_ANN[which(Lipids_ANN$sampleID %in% Annotation$sampleID),] #1976 but use the Busselton's metadata (Annotation), not the Lipids_Ann for further analysis. 
+
+#rm(idx, da)
+```
+
+
+```{r}
+lipo_names<-colnames(Lipo[, 2:113]) # only the lipo, minus sampleID.)
+lipid_names<-colnames(Lipids)
+lipid_class<-unique(sapply(strsplit(lipid_names,".",fixed = T),"[",1))
+```
+
+
+## Four main groups: Healthy, Obese, T2DM_Hw, T2DM_Ob
+
+- Healthy
+  
+  - no health issue or condition (Summary_Healthy = 1)
+  - healthy weight (BMI < 30) 
+  
+    This is slightly more generous than the WHO BMI indexing but since this is an older cohort, we allow a higher BMI range for the healthy weight. 
+    WHO BMI indexing would include those 25 - 30  as overweight - this is an important fact to note when comparing to another cohort.
+    
+
+- Obese 
+  
+  - not diabetic (Summary_Type2_Diabetes_idx = 0)
+  - can have other health conditions
+  - BMI > 30 
+  
+- T2DM_Hw
+
+  - has Type 2 diabetes (Summary_Type2_Diabetes_idx = 1)
+  - can have other health conditions
+  - BMI < 30 
+  
+- T2DM_Ob
+
+  - has Type 2 diabetes (Summary_Type2_Diabetes_idx = 1)
+  - can have other health conditions
+  - BMI > 30 
+
+
+## Background summary table
+```{r}
+idx_hty = which(Annotation$Summary_Healthy==1)
+idx_obs = which(Annotation$Summary_overweight_idx==1 & Annotation$Summary_Diabetes_idx==0)
+idx_DM = which(Annotation$Summary_Diabetes_idx==1)
+
+Combined_Data<-data.frame(Annotation,Lipo,Lipids)
+Combined_Data$BMI_over30 <- ifelse(Combined_Data$bmi>30, 1,0) 
+
+idx_DM_H = which(Annotation$Summary_Diabetes_idx==1 & Combined_Data$BMI_over30 ==0)
+idx_DM_O = which(Annotation$Summary_Diabetes_idx==1 & Combined_Data$BMI_over30 ==1)
+
+
+Combined_subData <- Combined_Data[c(idx_hty,idx_obs, idx_DM_H, idx_DM_O),]
+
+Combined_subData<-Combined_subData%>%
+  mutate(Group = ifelse(Summary_Healthy==1,"Healthy",NA),
+         Group = ifelse(Summary_overweight_idx==1,"Obese",Group),
+         Group = ifelse(Summary_Diabetes_idx==1 & BMI_over30==0,"T2DM_Hw",Group), 
+         Group = ifelse(Summary_Diabetes_idx==1 & BMI_over30==1,"T2DM_Ob",Group))%>%
+  relocate(Group, BMI_over30, .after = bloodno6)
+
+Combined_subData%>%
+  select(Group,sex,age,bmi,cholesterol,triglycerides,high_density_lipoprotein,glucose,c_reactive_protein,Summary_Hyperlipidemia_idx:Summary_Diabetes_idx)%>%
+  gtsummary::tbl_summary(by = Group, missing = "no")
+
+#rm(idx_DM, idx_hty, idx_obs)
+```
+
+
+## Lipoprotein summary table
+
+P-value = Anova result
+
+- if significant, post-hoc tests amongst the groups (Tukey's HSD) are performed to identify which specific groups differ from each other. 
+
+</div>
+```{r}
+Combined_subData%>%
+  dplyr::select(Group,lipo_names)%>%
+      group_by(Group) %>%
+      summarise(across(where(is.numeric), 
+                       list(mean = ~mean(., na.rm = TRUE),
+                            sd = ~sd(., na.rm = TRUE)), 
+                       .names = "{.col}_{.fn}")) %>%
+      pivot_longer(cols = !Group, names_to = "Variable", values_to = "Value")%>%
+      separate(Variable, into = c("Variable", "Statistic"), sep = "_")%>%
+      pivot_wider(names_from = "Statistic",values_from = "Value")%>%
+      mutate(values = paste0(round(mean,2)," ± ",round(sd,2)))%>%
+      select(!mean:sd)%>%
+      pivot_wider(names_from = Group,values_from = values)->tbl1
+tbl1<-perform_stat_tests(Combined_subData,group = "Group",var = lipo_names,method = "anova",tbl1)
+
+htmlTable(tbl1, caption = "Table1: Lipoprotein across Groups", css.table = "width: 115%;") # make the columns more spaced out
+
+#write.csv(tbl1, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Lipo_summary_table_DMsplit_25072024.csv", row.names = F)
+```
+<div style="margin-bottom:50px;">
+
+
+</div>
+```{r}
+# lipos that are significant at least in 4 pairs of group comparisons 
+tbl1_4p <- tbl1 %>%
+  filter(Pvalue != "" &
+         rowSums(across(c("Obese-Healthy", "T2DM_Hw-Healthy", "T2DM_Ob-Healthy", "T2DM_Hw-Obese", "T2DM_Ob-Obese", "T2DM_Ob-T2DM_Hw"), ~ . == "***" | . == "**" | . == "*")) < 5)
+
+htmlTable(tbl1_4p, caption = "Table 2: Lipoproteins that are significant in at least 4 pairs of group comparison, n = 82",css.table = "width: 110%;") #82
+
+```
+<div style="margin-bottom:50px;">
+
+<br>
+
+#### 88 lipoproteins are found to be significant in at least 4 pairs of group comparison. They will be used for further downstream analysis. 
+
+
+## Correlation analysis 
+
+- To figure out the relationship between the significant lipoproteins and the lipids. 
+
+- The analysis will be done per group. 
+
+
+```{r}
+lipo_4p<-unique(colnames(Combined_subData[colnames(Combined_subData) %in% tbl1_4p$Variable]))
+
+subLipo <- Combined_subData %>% 
+  select(Group, sex, age_cat, all_of(lipo_4p)) 
+
+subLipoH <- subLipo[idx_hty, ]
+subLipoO <- subLipo[idx_obs, ]
+subLipoD <- subLipo[idx_DM, ]
+subLipoDH <- subLipo[idx_DM_H, ]
+subLipoDO <- subLipo[idx_DM_O, ]
+
+subLipid <- Combined_subData %>% 
+select(Group, sex, age_cat, "CE.14.0.":ncol(Combined_subData))
+
+subLipidH <- subLipid[idx_hty, ]
+subLipidO <- subLipid[idx_obs, ]
+subLipidD <- subLipid[idx_DM, ]
+subLipidDH <- subLipid[idx_DM_H, ]
+subLipidDO <- subLipid[idx_DM_O, ]
+
+```
+
+
+```{r}
+# Extract the lipo and lipid from Healthy subLipo dataset
+# data1 and data2 are already dataframes. 
+data1 <- subLipoH %>% select(4:ncol(subLipoH)) 
+data2 <- subLipidH %>% select(4:ncol(subLipidH)) 
+
+# Initialize a matrix to store the correlation coefficients  - m rows (lipo) x n columns (lipids)
+cor_matrixH <- matrix(NA, nrow = ncol(data1), ncol = ncol(data2))
+rownames(cor_matrixH) <- colnames(data1)
+colnames(cor_matrixH) <- colnames(data2)
+
+# Compute the correlations
+for(i in 1:ncol(data1)) {
+  for(j in 1:ncol(data2)) {
+    cor_matrixH[i, j] <- cor(data1[[i]], data2[[j]], use = "complete.obs")
+  }
+}
+
+# Convert the matrix to a data frame for easier handling
+cor_dfH <- as.data.frame(cor_matrixH)
+
+# Generate the heatmap
+pH <- pheatmap(cor_dfH, cluster_rows = TRUE, cluster_cols = TRUE, show_rownames = FALSE, show_colnames = FALSE, silent = TRUE, main = "Lipo-Lipid Healthy")
+
+print(pH)
+```
+
+
+
+```{r}
+# Extract the lipo and lipid from Obese subLipo dataset
+# data3 and data4 are already dataframes. 
+data3 <- subLipoO %>% select(4:ncol(subLipoO)) 
+data4 <- subLipidO %>% select(4:ncol(subLipidO)) 
+
+# Initialize a matrix to store the correlation coefficients  - m rows (lipo) x n columns (lipids)
+cor_matrixO <- matrix(NA, nrow = ncol(data3), ncol = ncol(data4))
+rownames(cor_matrixO) <- colnames(data3)
+colnames(cor_matrixO) <- colnames(data4)
+
+# Compute the correlations
+for(i in 1:ncol(data3)) {
+  for(j in 1:ncol(data4)) {
+    cor_matrixO[i, j] <- cor(data3[[i]], data4[[j]], use = "complete.obs")
+  }
+}
+
+# Convert the matrix to a data frame for easier handling
+cor_dfO <- as.data.frame(cor_matrixO)
+
+# Generate the heatmap
+pO <- pheatmap(cor_dfO, cluster_rows = TRUE, cluster_cols = TRUE, show_rownames = FALSE, show_colnames = FALSE, silent = TRUE, main = "Lipo-Lipid Obese")
+
+print(pO)
+```
+
+
+```{r}
+# Extract the lipo and lipid from T2DM subLipo dataset
+#data5 and data6 are already dataframes.
+data5 <- subLipoD %>% select(4:ncol(subLipoD)) 
+data6 <- subLipidD %>% select(4:ncol(subLipidD))
+
+# Initialize a matrix to store the correlation coefficients - m rows (lipo) x n columns (lipids)
+cor_matrixD <- matrix(NA, nrow = ncol(data5), ncol = ncol(data6))
+rownames(cor_matrixD) <- colnames(data5)
+colnames(cor_matrixD) <- colnames(data6)
+
+# Compute the correlations
+for(i in 1:ncol(data5)) {
+  for(j in 1:ncol(data6)) {
+    cor_matrixD[i, j] <- cor(data5[[i]], data6[[j]], use = "complete.obs")
+  }
+}
+
+# Convert the matrix to a data frame for easier handling
+cor_dfD <- as.data.frame(cor_matrixD)
+
+# Generate the heatmap
+pD <- pheatmap(cor_dfD, cluster_rows = TRUE, cluster_cols = TRUE, show_rownames = FALSE, show_colnames = FALSE, silent = TRUE, main = "Lipo - Lipid T2DM")
+
+print(pD)
+```
+
+
+```{r}
+# Extract the lipo and lipid from T2DM subLipo dataset
+#data5 and data6 are already dataframes.
+data7H <- subLipoDH %>% select(4:ncol(subLipoDH)) 
+data8H <- subLipidDH %>% select(4:ncol(subLipidDH)) ## 895 lipids
+
+# Initialize a matrix to store the correlation coefficients - 77 rows (lipo) x 895 columns (lipids)
+cor_matrixDH <- matrix(NA, nrow = ncol(data7H), ncol = ncol(data8H))
+rownames(cor_matrixDH) <- colnames(data7H)
+colnames(cor_matrixDH) <- colnames(data8H)
+
+# Compute the correlations
+for(i in 1:ncol(data7H)) {
+  for(j in 1:ncol(data8H)) {
+    cor_matrixDH[i, j] <- cor(data7H[[i]], data8H[[j]], use = "complete.obs")
+  }
+}
+
+# Convert the matrix to a data frame for easier handling
+cor_dfDH <- as.data.frame(cor_matrixDH)
+
+# Generate the heatmap
+pDH <- pheatmap(cor_dfDH, cluster_rows = TRUE, cluster_cols = TRUE, show_rownames = FALSE, show_colnames = FALSE, silent = TRUE, main = "Lipo - Lipid T2DM_Hw")
+
+print(pDH)
+```
+
+
+```{r}
+# Extract the lipo and lipid from T2DM subLipo dataset
+#data5 and data6 are already dataframes.
+data7O <- subLipoDO %>% select(4:ncol(subLipoDO)) 
+data8O <- subLipidDO %>% select(4:ncol(subLipidDO)) ## 895 lipids
+
+# Initialize a matrix to store the correlation coefficients - 77 rows (lipo) x 895 columns (lipids)
+cor_matrixDO <- matrix(NA, nrow = ncol(data7O), ncol = ncol(data8O))
+rownames(cor_matrixDO) <- colnames(data7O)
+colnames(cor_matrixDO) <- colnames(data8O)
+
+# Compute the correlations
+for(i in 1:ncol(data7O)) {
+  for(j in 1:ncol(data8O)) {
+    cor_matrixDO[i, j] <- cor(data7O[[i]], data8O[[j]], use = "complete.obs")
+  }
+}
+
+# Convert the matrix to a data frame for easier handling
+cor_dfDO <- as.data.frame(cor_matrixDO)
+
+# Generate the heatmap
+pDO <- pheatmap(cor_dfDO, cluster_rows = TRUE, cluster_cols = TRUE, show_rownames = FALSE, show_colnames = FALSE, silent = TRUE, main = "Lipo - Lipid T2DM_Ob")
+
+print(pDO)
+```
+
+
+
+## PCA of the correlation results
+
+Conducting a Principal Component Analysis on the above correlation results between lipo and lipid. 
+
+```{r}
+library(plotly)
+
+mod<-PCA(cor_dfH, plot=FALSE)
+
+data.frame(mod$data$scores)%>%
+  mutate(label = lipo_4p,
+         class = substr(label,3,4),
+         class = ifelse(label %in% c("ABA1","LDHD"),"ratio",class))%>%
+  ggplot(aes(x = PC1,y = PC2, color = class, label = label))+
+  geom_point()+geom_text()+
+  labs(title = "PCA scores of Lipo-Lipid correlation for Healthy Group", col = "Lipo Class",
+       x = paste0("PC1 (",round(mod$data$pcSum$`Proportion of Variance`[1],1),"%)"),
+       y = paste0("PC2 (",round(mod$data$pcSum$`Proportion of Variance`[2],1),"%)"))+
+  geom_hline(yintercept = 0,col = "grey")+
+  geom_vline(xintercept = 0,col = "grey")+
+  theme_bw()->p1
+
+data.frame(mod$data$loadings)%>%
+  mutate(lipid_names = lipid_names,
+         lipid_class = sapply(strsplit(lipid_names,".",fixed = TRUE),"[",1))%>%
+  ggplot(aes(PC1,PC2, color = factor(lipid_class),label = lipid_names))+
+  geom_point()+
+  labs(title = "PCA Loadings of Lipo-Lipid correlation for Healthy Group", col = "Lipid Class",
+       x = paste0("PC1 (",round(mod$data$pcSum$`Proportion of Variance`[1],1),"%)"),
+       y = paste0("PC2 (",round(mod$data$pcSum$`Proportion of Variance`[2],1),"%)"))+
+  geom_hline(yintercept = 0,col = "grey")+
+  geom_vline(xintercept = 0,col = "grey")+
+  theme_bw()->p2
+
+
+ggplotly(p1)
+
+ggplotly(p2)
+
+```
+
+
+```{r}
+mod<-PCA(cor_dfO, plot=FALSE)
+
+data.frame(mod$data$scores)%>%
+  mutate(label = lipo_4p,
+         class = substr(label,3,4),
+         class = ifelse(label %in% c("ABA1","LDHD"),"ratio",class))%>%
+  ggplot(aes(x = PC1,y = PC2, color = class, label = label))+
+  geom_point()+geom_text()+
+  labs(title = "PCA scores of Lipo-Lipid correlation for Obese Group", col = "Lipo Class",
+       x = paste0("PC1 (",round(mod$data$pcSum$`Proportion of Variance`[1],1),"%)"),
+       y = paste0("PC2 (",round(mod$data$pcSum$`Proportion of Variance`[2],1),"%)"))+
+  geom_hline(yintercept = 0,col = "grey")+
+  geom_vline(xintercept = 0,col = "grey")+
+  theme_bw()->p3
+
+data.frame(mod$data$loadings)%>%
+  mutate(lipid_names = lipid_names,
+         lipid_class = sapply(strsplit(lipid_names,".",fixed = TRUE),"[",1))%>%
+  ggplot(aes(PC1,PC2, color = factor(lipid_class),label = lipid_names))+
+  geom_point()+
+  labs(title = "PCA Loadings of Lipo-Lipid correlation for Obese Group", col = "Lipid Class",
+       x = paste0("PC1 (",round(mod$data$pcSum$`Proportion of Variance`[1],1),"%)"),
+       y = paste0("PC2 (",round(mod$data$pcSum$`Proportion of Variance`[2],1),"%)"))+
+  geom_hline(yintercept = 0,col = "grey")+
+  geom_vline(xintercept = 0,col = "grey")+
+  theme_bw()->p4
+
+
+ggplotly(p3)
+
+ggplotly(p4)
+```
+
+
+```{r}
+mod<-PCA(cor_dfD, plot=FALSE)
+
+data.frame(mod$data$scores)%>%
+  mutate(label = lipo_4p,
+         class = substr(label,3,4),
+         class = ifelse(label %in% c("ABA1","LDHD"),"ratio",class))%>%
+  ggplot(aes(x = PC1,y = PC2, color = class, label = label))+
+  geom_point()+geom_text()+
+  labs(title = "PCA scores of Lipo-Lipid correlation for T2DM Group", col = "Lipo Class",
+       x = paste0("PC1 (",round(mod$data$pcSum$`Proportion of Variance`[1],1),"%)"),
+       y = paste0("PC2 (",round(mod$data$pcSum$`Proportion of Variance`[2],1),"%)"))+
+  geom_hline(yintercept = 0,col = "grey")+
+  geom_vline(xintercept = 0,col = "grey")+
+  theme_bw()->p5
+
+data.frame(mod$data$loadings)%>%
+  mutate(lipid_names = lipid_names,
+         lipid_class = sapply(strsplit(lipid_names,".",fixed = TRUE),"[",1))%>%
+  ggplot(aes(PC1,PC2, color = factor(lipid_class),label = lipid_names))+
+  geom_point()+
+  labs(title = "PCA Loadings of Lipo-Lipid correlation for T2DM Group", col = "Lipid Class",
+       x = paste0("PC1 (",round(mod$data$pcSum$`Proportion of Variance`[1],1),"%)"),
+       y = paste0("PC2 (",round(mod$data$pcSum$`Proportion of Variance`[2],1),"%)"))+
+  geom_hline(yintercept = 0,col = "grey")+
+  geom_vline(xintercept = 0,col = "grey")+
+  theme_bw()->p6
+
+
+ggplotly(p5)
+
+ggplotly(p6)
+```
+
+
+```{r}
+mod<-PCA(cor_dfDH, plot=FALSE)
+
+data.frame(mod$data$scores)%>%
+  mutate(label = lipo_4p,
+         class = substr(label,3,4),
+         class = ifelse(label %in% c("ABA1","LDHD"),"ratio",class))%>%
+  ggplot(aes(x = PC1,y = PC2, color = class, label = label))+
+  geom_point()+geom_text()+
+  labs(title = "PCA scores of Lipo-Lipid correlation for T2DM_Hw Group", col = "Lipo Class",
+       x = paste0("PC1 (",round(mod$data$pcSum$`Proportion of Variance`[1],1),"%)"),
+       y = paste0("PC2 (",round(mod$data$pcSum$`Proportion of Variance`[2],1),"%)"))+
+  geom_hline(yintercept = 0,col = "grey")+
+  geom_vline(xintercept = 0,col = "grey")+
+  theme_bw()->p7H
+
+data.frame(mod$data$loadings)%>%
+  mutate(lipid_names = lipid_names,
+         lipid_class = sapply(strsplit(lipid_names,".",fixed = TRUE),"[",1))%>%
+  ggplot(aes(PC1,PC2, color = factor(lipid_class),label = lipid_names))+
+  geom_point()+
+  labs(title = "PCA Loadings of Lipo-Lipid correlation for T2DM_Hw Group", col = "Lipid Class",
+       x = paste0("PC1 (",round(mod$data$pcSum$`Proportion of Variance`[1],1),"%)"),
+       y = paste0("PC2 (",round(mod$data$pcSum$`Proportion of Variance`[2],1),"%)"))+
+  geom_hline(yintercept = 0,col = "grey")+
+  geom_vline(xintercept = 0,col = "grey")+
+  theme_bw()->p8H
+
+
+ggplotly(p7H)
+
+ggplotly(p8H)
+```
+
+
+```{r}
+mod<-PCA(cor_dfDO, plot=FALSE)
+
+data.frame(mod$data$scores)%>%
+  mutate(label = lipo_4p,
+         class = substr(label,3,4),
+         class = ifelse(label %in% c("ABA1","LDHD"),"ratio",class))%>%
+  ggplot(aes(x = PC1,y = PC2, color = class, label = label))+
+  geom_point()+geom_text()+
+  labs(title = "PCA scores of Lipo-Lipid correlation for T2DM_Ob Group", col = "Lipo Class",
+       x = paste0("PC1 (",round(mod$data$pcSum$`Proportion of Variance`[1],1),"%)"),
+       y = paste0("PC2 (",round(mod$data$pcSum$`Proportion of Variance`[2],1),"%)"))+
+  geom_hline(yintercept = 0,col = "grey")+
+  geom_vline(xintercept = 0,col = "grey")+
+  theme_bw()->p7O
+
+data.frame(mod$data$loadings)%>%
+  mutate(lipid_names = lipid_names,
+         lipid_class = sapply(strsplit(lipid_names,".",fixed = TRUE),"[",1))%>%
+  ggplot(aes(PC1,PC2, color = factor(lipid_class),label = lipid_names))+
+  geom_point()+
+  labs(title = "PCA Loadings of Lipo-Lipid correlation for T2DM_Ob Group", col = "Lipid Class",
+       x = paste0("PC1 (",round(mod$data$pcSum$`Proportion of Variance`[1],1),"%)"),
+       y = paste0("PC2 (",round(mod$data$pcSum$`Proportion of Variance`[2],1),"%)"))+
+  geom_hline(yintercept = 0,col = "grey")+
+  geom_vline(xintercept = 0,col = "grey")+
+  theme_bw()->p8O
+
+
+ggplotly(p7O)
+
+ggplotly(p8O)
+```
+
+
+</div>

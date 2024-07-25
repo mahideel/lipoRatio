@@ -1,0 +1,903 @@
+---
+title: "Busselton Lipid"
+author: "nminaee"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r,echo=FALSE, warning=FALSE, message=FALSE}
+library(dplyr)
+library(readr)
+library(reshape2)
+library(ggplot2)
+library(ggrepel)
+library(tibble)
+library(ggpubr)
+library(mva.plots)
+library(ca)
+library(tidyr)
+library(tidyverse)
+library(corrplot)
+library(GGally)
+library(stats)
+library(pheatmap)
+library(cluster)
+library(gridExtra)
+library(ggpubr)
+library(htmlTable)
+library(broom)
+```
+
+
+```{r, echo=FALSE}
+# Create a function to set square aspect ratio
+set_square_aspect_ratio <- function(plot) {
+  plot + theme(aspect.ratio = 1)
+}
+
+
+continuousPalette<- c(
+                        "#0000CC",
+                        "#0000FF",
+                        "#0055FF",
+                        "#00AAFF",
+                        "#00FFFF",
+                        "#2BFFD5",
+                        "#55FFAA",
+                        "#80FF80",
+                        "#AAFF55",
+                        "#D4FF2B",
+                        "#FFFF00",
+                        "#FFAA00",
+                        "#FF5500",
+                        "#FF0000",
+                        "#CC0000")
+
+txt2S <- function(col) {
+  newCol <- lapply(col, function(i) {
+    if (!is.na(i)){
+      i <- abs(as.numeric(i))
+      if (i < 0.05 & i >= 0.01) {"*"
+      } else if (i < 0.01 & i >= 0.001) {
+        "**"
+      } else if (i < 0.001) {
+        "***"
+      } else {
+        ""
+      }
+    } else {
+      NA
+    }
+  })
+  return(unlist(newCol))
+}
+
+
+# Function to perform univariate t-test
+univariate_test <- function(data) {
+  t.test(value ~ group_var, data = data) %>% 
+    broom::tidy()
+}
+
+
+
+perform_stat_tests<-function(tdf_tbl,group = NULL,var, method, tbl1){
+  # Handle missing or infinite values
+  data_pval <- tdf_tbl %>%
+    mutate(across(-{{group}}, ~replace(., is.nan(.) | is.infinite(.), 0)))%>%
+    rename(group = {{group}})%>%
+    dplyr::select(group,var)
+  
+  
+  # Switch between ANOVA and Wilcoxon tests based on the method argument
+  p_model <- switch(method,
+                    "anova" = lapply(data_pval %>% select(-group), function(x) {
+                      aov(x ~ data_pval$group)
+                    }),
+                    "wilcox" = {
+                      if (length(unique(data_pval$group)) > 2) {
+                        stop("Wilcoxon test does not support more than 2 groups naturally.")
+                      } else {
+                        lapply(data_pval %>% select(-group), function(x) {
+                          wilcox.test(x ~ data_pval$group)
+                        })
+                      }
+                    },
+                    stop("Unsupported method type provided")
+  )
+  
+  # Generate summaries of the model results
+  model_summaries <- lapply(p_model, summary)
+  
+  
+  # Extracting results and performing post-hoc tests where applicable
+  summary_list <- list()
+  
+  for(i in names(model_summaries)){
+    variable = data.frame(Variable =i)
+    variable$Pvalue = txt2S(model_summaries[[i]][[1]]['Pr(>F)'][1,])
+    tukey_p<-as.data.frame(TukeyHSD(p_model[[i]])[[1]])
+    tukey_p$comparison<-rownames(tukey_p)
+    tukey_p$`p adj`<-txt2S(tukey_p$`p adj`)
+    tukey_p<-data.frame(t(tukey_p[,c("comparison","p adj")]))
+    colnames(tukey_p)<-tukey_p[1,]
+    tukey_p<-tukey_p[-1,]
+    variable<-cbind(variable,tukey_p)
+    summary_list[[i]]<-variable
+    rm(variable,tukey_p)
+  }
+  
+  # Combine all individual summaries into a single data frame
+  summary_list <- do.call(rbind, summary_list)
+  
+  # Merge the summarized data frame with the existing table `tbl1`
+  tbl1 <- merge(tbl1, summary_list, by = "Variable")
+  
+  return(tbl1)
+}
+```
+
+
+# Load the data
+
+MS Lipid 
+```{r, echo=FALSE, message= FALSE, warning=FALSE}
+load("/Users/novia/Desktop/Diabetes_Obesity/Busselton/LipidMS/Busselton_PLA_MS_Lipids.daE")
+
+lipidData <- Busselton_PLA_MS_Lipids@.Data
+lipidMeta <- Busselton_PLA_MS_Lipids@obsDescr[[1]] # only need this part to retrieve sampleID that has been matched to lipidData; do not use this metadata - use the Busselton metadata
+# only use lipid data, use the Busselton metadata for the metadata. 
+
+l <- cbind(lipidData, lipidMeta)
+
+l <- l %>% select(1:895, sampleID)
+
+#rm(Busselton_PLA_MS_Lipids, lipidData, lipidMeta)
+```
+
+Lipoprotein
+```{r, echo=FALSE, message= FALSE, warning=FALSE}
+b <- read.csv("/Users/novia/Desktop/Diabetes_Obesity/Busselton/Matched_Bus_anno_lipo_allcolumns_NM_13052024.csv", header = TRUE)
+
+#load("Busselton_Final_forPaper2_23May2024.rda") #buss4 - final lipo data + meta that's used for Paper 2 draft. buss4 is the simplified version of b.  
+# NOTE: b and buss4 sampleID matched (08/07/2024). 
+
+#table(b$Summary_Type2_Diabetes_idx, b$Diabetes_)
+# check if there's any discrepancies between DM and diabetes group.
+### NOTE: Diabetes_ and Summary_Type2_Diabetes give roughly the same number of overall NO DM vs DM. 
+### BUT Diabetes_ = 1 includes uncertain DM1 diagnosis. So here onwards it's safer to use Summary_Type2_Diabetes_idx. 
+### DM column in buss4 reflects Summary_Type2_Diabetes column in b. 
+```
+
+
+```{r, echo=FALSE, message= FALSE, warning=FALSE}
+# selecting only timepoint 1 (T1) samples from lipid data to match lipo data and meta. 
+idx<-which(l$sampleID %in% b$sampleID)
+lipid <- l[which(l$sampleID %in% b$sampleID),]
+lipid <- lipid[match(b$sampleID, lipid$sampleID),]
+
+# checking if matching works
+#table(lipid$sampleID == b$sampleID) # yes 1976 matched. 
+# NA checking
+na_rows <- lipid[!complete.cases(lipid), ] #41 NAs
+
+lipid <- lipid %>% filter(!lipid$sampleID %in% na_rows$sampleID) #lipid data
+#1935
+
+lipo <- b %>% filter(!b$sampleID %in% na_rows$sampleID) #lipo data
+
+#table(lipid$sampleID == lipo$sampleID) #1935 Phew!
+
+lipo_names<-colnames(lipo)[1:112]
+lipid_names<-colnames(lipid)[1:895]
+lipid_class<-unique(sub("\\(.*$", "", lipid_names))
+
+combined <- merge(lipid, lipo, by = "sampleID")
+
+combined$taking_lipid_med <- ifelse(grepl("lipid|HMG-CoA|statin", combined$an_med, ignore.case = TRUE), 1, 0)
+combined$taking_any_med <- ifelse(is.na(combined$an_med), 0, 1)
+
+combined <- combined %>% relocate(sampleID,.before = "TPTG")
+
+#save(combined,file="Busselton_LipidMS_matchedwLipo_plusmeds_15Jul2024.rda")
+
+#rm(idx, na_rows, b, l, lipid, lipo)
+```
+
+
+```{r, echo = FALSE, message=FALSE, warning=FALSE}
+#load("Busselton_LipidMS_matchedwLipo_plusmeds_15Jul2024.rda")
+```
+
+
+# Split 1: Healthy = not diabetic (DM status = No DM) but can include other conditions.
+```{r, echo=FALSE, message= FALSE, warning=FALSE}
+healthy_nodm <- combined %>% filter(combined$DM == "NO DM") #1784
+
+healthy_nodm_hw <- healthy_nodm %>% filter(healthy_nodm$BMI.weight == "Healthy") #491
+healthy_nodm_ob <- healthy_nodm %>% filter(healthy_nodm$BMI.weight == "Obese") #472
+
+healthy_nodm_NOmeds_hw <- healthy_nodm_hw %>% filter(healthy_nodm_hw$taking_lipid_med == 0) #461
+healthy_nodm_meds_hw <- healthy_nodm_hw %>% filter(healthy_nodm_hw$taking_lipid_med == 1) #30
+
+healthy_nodm_NOmeds_ob <- healthy_nodm_ob %>% filter(healthy_nodm_ob$taking_lipid_med == 0) #385
+healthy_nodm_meds_ob <- healthy_nodm_ob %>% filter(healthy_nodm_ob$taking_lipid_med == 1) #87
+
+```
+
+
+## Heatmap with Clustering
+### Overall BMI - Healthy-weight vs Obese
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Load datasets
+data1 <- healthy_nodm_hw %>% select(1:895)  
+data2 <- healthy_nodm_ob %>% select(1:895) 
+
+# Calculate the correlation matrices
+cor1 <- cor(data1)
+cor2 <- cor(data2)
+
+# Create heatmaps with clustering and capture them as grobs
+set.seed(123)
+heatmap1 <- pheatmap(cor1, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F, 
+                     main = "Healthy-weight", 
+                     silent = TRUE)
+
+heatmap2 <- pheatmap(cor2, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F,
+                     main = "Obese",
+                     silent = TRUE)
+
+# p1 <- heatmap1$gtable # no need for these 2 anymore but keeping it just in case.
+# p2 <- heatmap2$gtable
+
+# Convert pheatmap objects to ggplot objects
+p1_gg <- ggplotify::as.ggplot(heatmap1)
+p2_gg <- ggplotify::as.ggplot(heatmap2)
+
+
+# Apply the function to both plots
+p1_gg <- set_square_aspect_ratio(p1_gg)
+p2_gg <- set_square_aspect_ratio(p2_gg)
+
+# Arrange the plots side by side using ggarrange
+ggarrange(p1_gg, p2_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+
+```
+
+### BMI and Meds 
+
+Make sure to note the imbalanced sample size between those who took vs did not take lipid meds. 
+
+#### Hw taking Lipid meds vs Hw not taking Lipid meds
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Load datasets
+data3 <- healthy_nodm_NOmeds_hw %>% select(1:895)  
+data4 <- healthy_nodm_meds_hw %>% select(1:895) 
+
+# Calculate the correlation matrices
+cor3 <- cor(data3)
+cor4 <- cor(data4)
+
+# Create heatmaps with clustering and capture them as grobs
+set.seed(123)
+heatmap3 <- pheatmap(cor3, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F, 
+                     main = "Hw NO Lipid Med", 
+                     silent = TRUE)
+
+heatmap4 <- pheatmap(cor4, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F,
+                     main = "Hw YES Lipid Med",
+                     silent = TRUE)
+
+
+# Convert pheatmap objects to ggplot objects
+p3_gg <- ggplotify::as.ggplot(heatmap3)
+p4_gg <- ggplotify::as.ggplot(heatmap4)
+
+
+# Apply the function to both plots
+p3_gg <- set_square_aspect_ratio(p3_gg)
+p4_gg <- set_square_aspect_ratio(p4_gg)
+
+# Arrange the plots side by side using ggarrange
+ggarrange(p3_gg, p4_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+
+```
+
+
+#### Ob taking Lipid meds vs Ob not taking Lipid meds
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Load datasets
+data5 <- healthy_nodm_NOmeds_ob %>% select(1:895)  
+data6 <- healthy_nodm_meds_ob %>% select(1:895) 
+
+# Calculate the correlation matrices
+cor5 <- cor(data5)
+cor6 <- cor(data6)
+
+# Create heatmaps with clustering and capture them as grobs
+set.seed(123)
+heatmap5 <- pheatmap(cor5, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F, 
+                     main = "Ob NO Lipid Med", 
+                     silent = TRUE)
+
+heatmap6 <- pheatmap(cor6, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F,
+                     main = "Ob YES Lipid Med",
+                     silent = TRUE)
+
+# Convert pheatmap objects to ggplot objects
+p5_gg <- ggplotify::as.ggplot(heatmap5)
+p6_gg <- ggplotify::as.ggplot(heatmap6)
+
+
+# Apply the function to both plots
+p5_gg <- set_square_aspect_ratio(p5_gg)
+p6_gg <- set_square_aspect_ratio(p6_gg)
+
+# Arrange the plots side by side using ggarrange
+ggarrange(p5_gg, p6_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+
+```
+
+
+#### Hw NOT taking Lipid meds vs Ob not taking Lipid meds
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Arrange the heatmaps side by side
+ggarrange(p3_gg, p5_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+```
+
+#### Hw taking Lipid meds vs Ob taking Lipid meds
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Arrange the heatmaps side by side
+ggarrange(p4_gg, p6_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+```
+
+
+
+## Feature Selection 
+### Multivariate modeling
+
+Applying penalised regression models to lipid data (in this instance Healthy is simply No DM). 
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(glmnet)
+library(caret)
+
+# Setting the data 
+set.seed(123)
+X <- healthy_nodm[, 1:895]
+y <- healthy_nodm$bmi
+
+# Split the data into training and testing sets
+trainIndex <- createDataPartition(y, p = 0.8, list = FALSE)
+X_train <- X[trainIndex, ]
+y_train <- y[trainIndex]
+X_test <- X[-trainIndex, ]
+y_test <- y[-trainIndex]
+
+# Convert data frames to matrices
+X_train_matrix <- scale(as.matrix(X_train))
+X_test_matrix <- scale(as.matrix(X_test), center = attr(X_train_matrix, "scaled:center"), scale = attr(X_train_matrix, "scaled:scale"))
+```
+
+
+#### Lasso
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Fit Lasso regression
+lasso_model <- cv.glmnet(X_train_matrix, y_train, alpha = 1)
+
+# Best lambda for Lasso
+best_lambda_lasso <- lasso_model$lambda.min
+
+# Extract coefficients at the best lambda
+lasso_coefs <- coef(lasso_model, s = best_lambda_lasso)
+
+# Convert the sparse matrix to a readable format
+lasso_coefs_df <- as.data.frame(as.matrix(lasso_coefs))
+
+# Display non-zero coefficients
+lasso_nonzero_coefs <- lasso_coefs_df[lasso_coefs_df != 0, , drop = FALSE]
+#print(lasso_nonzero_coefs)
+
+# Predict on the test set
+lasso_predictions <- predict(lasso_model, s = best_lambda_lasso, newx = X_test_matrix)
+
+```
+
+#### Ridge
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Fit Ridge regression
+ridge_model <- cv.glmnet(X_train_matrix, y_train, alpha = 0)
+
+# Best lambda for Ridge
+best_lambda_ridge <- ridge_model$lambda.min
+
+# Extract coefficients at the best lambda
+ridge_coefs <- coef(ridge_model, s = best_lambda_ridge)
+
+# Convert the sparse matrix to a readable format
+ridge_coefs_df <- as.data.frame(as.matrix(ridge_coefs))
+
+# Display all coefficients
+#print(ridge_coefs_df)
+
+
+# Predict on the test set
+ridge_predictions <- predict(ridge_model, s = best_lambda_ridge, newx = X_test_matrix)
+```
+
+
+#### Elastic net
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Fit Elastic Net model
+elastic_net_model <- cv.glmnet(X_train_matrix, y_train, alpha = 0.5)  # alpha = 0.5 for equal balance
+
+# Best lambda for Elastic Net
+best_lambda_elastic_net <- elastic_net_model$lambda.min
+
+
+# Extract coefficients at the best lambda
+elastic_net_coefs <- coef(elastic_net_model, s = best_lambda_elastic_net)
+
+# Convert the sparse matrix to a readable format
+elastic_net_coefs_df <- as.data.frame(as.matrix(elastic_net_coefs))
+
+# Display non-zero coefficients
+elastic_net_nonzero_coefs <- elastic_net_coefs_df[elastic_net_coefs_df != 0, , drop = FALSE]
+#print(elastic_net_nonzero_coefs)
+
+
+# Predict on the test set
+elastic_net_predictions <- predict(elastic_net_model, s = best_lambda_elastic_net, newx = X_test_matrix)
+
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Identify non-zero coefficients for Lasso and Elastic Net
+lasso_nonzero_predictors <- rownames(lasso_coefs_df)[lasso_coefs_df[,1] != 0]
+elastic_net_nonzero_predictors <- rownames(elastic_net_coefs_df)[elastic_net_coefs_df[,1] != 0]
+
+# For Ridge, consider non-zero coefficients (they are typically non-zero due to regularization)
+ridge_nonzero_predictors <- rownames(ridge_coefs_df)[ridge_coefs_df[,1] != 0]
+
+# Find common predictors identified by Lasso, Ridge, and Elastic Net
+common_predictors <- Reduce(intersect, list(lasso_nonzero_predictors, elastic_net_nonzero_predictors, ridge_nonzero_predictors))
+
+print("Common Predictors Identified by All Models:")
+print(common_predictors)
+
+```
+
+
+#### Accuracy measurement
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+accuracy_metrics <- function(true_values, predicted_values) {
+  mse <- mean((true_values - predicted_values)^2)
+  rmse <- sqrt(mse)
+  r2 <- 1 - (sum((true_values - predicted_values)^2) / sum((true_values - mean(true_values))^2))
+  return(list(MSE = mse, RMSE = rmse, R2 = r2))
+}
+```
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# Calculate accuracy for Lasso
+lasso_accuracy <- accuracy_metrics(y_test, lasso_predictions)
+# print("Lasso Regression Accuracy:")
+# print(lasso_accuracy)
+
+# Calculate accuracy for Ridge
+ridge_accuracy <- accuracy_metrics(y_test, ridge_predictions)
+# print("Ridge Regression Accuracy:")
+# print(ridge_accuracy)
+
+# Calculate accuracy for Elastic Net
+elastic_net_accuracy <- accuracy_metrics(y_test, elastic_net_predictions)
+# print("Elastic Net Regression Accuracy:")
+# print(elastic_net_accuracy)
+
+model_performance_summary <- data.frame("Model" = c("Lasso", "Ridge", "Elastic Net"), "MSE" = c(lasso_accuracy$MSE, ridge_accuracy$MSE, elastic_net_accuracy$MSE), "RMSE" = c(lasso_accuracy$RMSE, ridge_accuracy$RMSE, elastic_net_accuracy$RMSE), "R2" = c(lasso_accuracy$R2, ridge_accuracy$R2, elastic_net_accuracy$R2))
+
+print("Summary of Model Performance: ")
+print(model_performance_summary)
+
+```
+
+
+
+# Split 2: selecting Healthy and Obese (but not diabetes), T2DM groups
+Healthy = Summary_Healthy==1 means No conditions AND Healthy weight. 
+```{r, echo=FALSE, message= FALSE, warning=FALSE}
+idx_hty = which(combined$Summary_Healthy==1) #255 #No conditions AND Healthy weight. 
+idx_obs = which(combined$Summary_overweight_idx==1 & combined$Summary_Diabetes_idx==0) #466 #Overweight and Obese and Not Diabetic
+idx_DM = which(combined$Summary_Diabetes_idx==1) #160 # Diabetic regardless BMI
+
+
+Combined_subData<-combined[c(idx_hty,idx_obs,idx_DM),] 
+
+Combined_subData <- Combined_subData%>%
+  mutate(Group = ifelse(Summary_Healthy==1,"Hty",NA),
+         Group = ifelse(Summary_overweight_idx==1,"OBS",Group),  #overweight & obese
+         Group = ifelse(Summary_Diabetes_idx==1,"DM",Group))%>%
+  relocate(Group,.after = bloodno6) %>% relocate(sampleID,.before = "TPTG") 
+
+
+Combined_subData %>% select(Group,sex,age,bmi,cholesterol,triglycerides,high_density_lipoprotein,glucose,c_reactive_protein,creatinine,glycated_haemoglobin,sbp,dbp,Summary_Hypertension_idx:Summary_Diabetes_idx, taking_lipid_med, taking_any_med)  %>% gtsummary::tbl_summary(by = Group)
+
+#idx_hty_taking_meds <- which(Combined_subData$taking_any_med == 1 & Combined_subData$Summary_Healthy ==1) #35 who are deemed super healthy but taking some sort of meds - BUT NOT taking lipid med.
+
+#Combined_subData[idx_hty_taking_meds, ] %>% select(BMI.weight, an_med) 
+
+Hw <- Combined_subData[idx_hty, ] #255
+Ob <- Combined_subData[idx_obs, ] #466 #includes the overweights
+
+```
+
+
+## Heatmap with Clustering
+Further split by Sex - M_Hw v F_Hw; M_Ob v F_Ob
+
+### Male Hw v Ob
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Load datasets
+data7a <- Hw %>% filter(Hw$sex=="M") %>% select(1:895) #50   
+data7b <- Ob %>% filter(Ob$sex=="M")%>% select(1:895) #106
+
+# Calculate the correlation matrices
+cor7a <- cor(data7a)
+cor7b <- cor(data7b)
+
+# Create heatmaps with clustering and capture them as grobs
+set.seed(123)
+heatmap7a <- pheatmap(cor7a, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F, 
+                     main = "Male Hw", 
+                     silent = TRUE)
+
+heatmap7b <- pheatmap(cor7b, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F,
+                     main = "Male Obese",
+                     silent = TRUE)
+
+# Convert pheatmap objects to ggplot objects
+p7a_gg <- ggplotify::as.ggplot(heatmap7a)
+p7b_gg <- ggplotify::as.ggplot(heatmap7b)
+
+
+# Apply the function to both plots
+p7a_gg <- set_square_aspect_ratio(p7a_gg)
+p7b_gg <- set_square_aspect_ratio(p7b_gg)
+
+# Arrange the plots side by side using ggarrange
+ggarrange(p7a_gg, p7b_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+
+```
+
+
+
+### Female Hw v Ob
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Load datasets
+data8a <- Hw %>% filter(Hw$sex=="F") %>% select(1:895) #70   
+data8b <- Ob %>% filter(Ob$sex=="F")%>% select(1:895) #110
+
+# Calculate the correlation matrices
+cor8a <- cor(data8a)
+cor8b <- cor(data8b)
+
+# Create heatmaps with clustering and capture them as grobs
+set.seed(123)
+heatmap8a <- pheatmap(cor8a, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F, 
+                     main = "Female Hw", 
+                     silent = TRUE)
+
+heatmap8b <- pheatmap(cor8b, 
+                     clustering_method = "complete", show_rownames = F, show_colnames = F,
+                     main = "Female Obese",
+                     silent = TRUE)
+
+# Convert pheatmap objects to ggplot objects
+p8a_gg <- ggplotify::as.ggplot(heatmap8a)
+p8b_gg <- ggplotify::as.ggplot(heatmap8b)
+
+
+# Apply the function to both plots
+p8a_gg <- set_square_aspect_ratio(p8a_gg)
+p8b_gg <- set_square_aspect_ratio(p8b_gg)
+
+# Arrange the plots side by side using ggarrange
+ggarrange(p8a_gg, p8b_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+
+```
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+ggarrange(p7a_gg, p8a_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+ggarrange(p7b_gg, p8b_gg, ncol = 2, nrow = 1, widths = c(1, 1), heights = c(1, 1))
+```
+
+
+## Feature Selection 
+### Lipid Summary Table 
+```{r, echo=FALSE, message=FALSE, warning=FALSE, results='asis'}
+### Lipids summary table
+
+Combined_subData%>%
+  dplyr::select(Group,lipid_names)%>%
+      group_by(Group) %>%
+      summarise(across(where(is.numeric), 
+                       list(mean = ~mean(., na.rm = TRUE),
+                            sd = ~sd(., na.rm = TRUE)), 
+                       .names = "{.col}__{.fn}")) %>%
+      pivot_longer(cols = !c(Group), names_to = "Variable", values_to = "Value")%>%
+      separate(Variable, into = c("Variable", "Statistic"), sep = "__")%>%
+      pivot_wider(names_from = "Statistic",values_from = "Value")%>%
+      mutate(values = paste0(round(mean,2)," ± ",round(sd,2)))%>%
+      select(!mean:sd)%>%
+      pivot_wider(names_from = Group,values_from = values)->tbl1
+
+
+tbl1<-perform_stat_tests(Combined_subData,group = "Group",var = lipid_names,method = "anova",tbl1)
+
+```
+
+
+## Univariate Modelling 
+
+In the context of the univariate t-test results generated using the broom::tidy() function, the terms estimate, estimate1, estimate2 and parameter refer to specific statistical values related to the groups being compared: 
+
+- estimate: This is the estimated difference in means between the two groups. It represents the difference in the average values of the dependent variable for the two levels of the grouping variable.
+
+- estimate1: This is the mean value of the dependent variable for the first group (the group that appears first when sorted alphabetically or numerically).
+
+- estimate2: This is the mean value of the dependent variable for the second group (the group that appears second when sorted alphabetically or numerically).
+
+- parameter: Typically refers to the degrees of freedom (df). 
+
+
+Bonferroni correction has been applied and P-value threshold has been adjusted to account for multiple testing. 
+
+Only lipids that have p-value < 0.0001 considered as significant in this instance.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# creating obese01 variable for t-test 
+Combined_subData <- Combined_subData %>% mutate(obese01 = ifelse(BMI.weight == "Obese", 1, 0))
+lipid_subData <- Combined_subData %>% select(1:896, "sex", "obese01") 
+
+# Apply the univariate test function to all variables - regardless sex
+results <- lipid_subData %>%
+  pivot_longer(cols = -c(sampleID, obese01, sex), names_to = "variable", values_to = "value") %>%
+  mutate(group_var = obese01) %>%
+  group_by(variable) %>%
+  nest() %>%
+  mutate(test_result = map(data, univariate_test)) %>%
+  unnest(test_result) %>%
+  select(-data)
+
+# Adjusting for multiple testing
+results$adjusted_p_value <- p.adjust(results$p.value, method = "bonferroni")
+
+# Filter significant results based on adjusted p-value threshold
+significant_results <- results %>%
+  filter(adjusted_p_value < 0.0001) %>% arrange(adjusted_p_value) # 235 lipids- still quite a lot
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Apply the function to all variables - M v F separately
+results_M <- lipid_subData %>% filter(sex == "M") %>% 
+  pivot_longer(cols = -c(sampleID, obese01, sex), names_to = "variable", values_to = "value") %>%
+  mutate(group_var = obese01) %>%
+  group_by(variable) %>%
+  nest() %>%
+  mutate(test_result = map(data, univariate_test)) %>%
+  unnest(test_result) %>%
+  select(-data)
+
+# Adjusting for multiple testing
+results_M$adjusted_p_value <- p.adjust(results_M$p.value, method = "bonferroni")
+
+# Filter significant results based on adjusted p-value threshold
+significant_results_M <- results_M %>%
+  filter(adjusted_p_value < 0.0001) %>% arrange(adjusted_p_value) 
+
+# p-value = 0.05 -> 235 sig 
+# p-value = 0.01 -> 132 sig
+# p-value = 0.001 -> 84 sig
+# p-value = 0.0001 ->  47 sig
+
+print("Top 20 (out of 47) significant Lipids in Male:")
+print(head(significant_results_M, 20))
+
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Apply the function to all variables - M v F separately
+results_F <- lipid_subData %>% filter(sex == "F") %>% 
+  pivot_longer(cols = -c(sampleID, obese01, sex), names_to = "variable", values_to = "value") %>%
+  mutate(group_var = obese01) %>%
+  group_by(variable) %>%
+  nest() %>%
+  mutate(test_result = map(data, univariate_test)) %>%
+  unnest(test_result) %>%
+  select(-data)
+
+# Adjusting for multiple testing
+results_F$adjusted_p_value <- p.adjust(results_F$p.value, method = "bonferroni")
+
+# Filter significant results based on adjusted p-value threshold 
+significant_results_F <- results_F %>%
+  filter(adjusted_p_value < 0.0001) %>% arrange(adjusted_p_value) 
+
+print("Top 20 (out of 147) significant Lipids in Female:")
+print(head(significant_results_F, 20))
+
+# p-value = 0.05 -> 312 sig 
+# p-value = 0.01 -> 270 sig
+# p-value = 0.001 ->  201 sig
+# p-value = 0.0001 ->  147 sig # almost 3 times as Male ones. 
+
+common_sig_lipids <- Reduce(intersect, list(significant_results_M$variable, significant_results_F$variable)) # 40 lipids sig in both M & F
+print("Lipids significant in Male and Female:")
+print(common_sig_lipids) 
+lipids_in_M_only <- setdiff(significant_results_M$variable, significant_results_F$variable) # 7 lipids sig in M only
+print("Lipids significant in Male only:")
+print(lipids_in_M_only)
+lipids_in_F_only <- setdiff(significant_results_F$variable, significant_results_M$variable) # 107 lipids sig in F only
+print("Lipids significant in Female only:")
+print(lipids_in_F_only)
+
+```
+
+```{r}
+# if (!require("BiocManager", quietly = TRUE))
+#        install.packages("BiocManager")
+# BiocManager::install(c("GO.db", "preprocessCore", "impute"), force = TRUE )
+#install.packages("WGCNA")   # WGCNA is available on CRAN
+
+# Restart R session to install DBI package
+# .rs.restartR()
+# install.packages("DBI", repos = "http://cran.us.r-project.org")
+
+# Load the WGCNA package
+library(WGCNA)
+
+```
+
+# WGCNA
+## Data preparation
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Load your metabolomics data
+# must be a data frame where rows represent samples and columns represent lipid
+data <-lipid_subData[, 1:895]
+
+# Ensure the data is numeric - my lipid data is already numeric so no need for this step
+#data <- as.data.frame(lapply(data, as.numeric))
+
+# Check for missing values
+gsg <- goodSamplesGenes(data, verbose = 3)
+if (!gsg$allOK) {
+  # If some samples/lipid have too many missing values, consider removing them
+  data <- data[gsg$goodSamples, gsg$goodGenes]
+}
+```
+
+## Choose a Soft-Thresholding Power
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Choose a set of soft-thresholding powers
+powers <- c(1:20)
+sft <- pickSoftThreshold(data, powerVector = powers, verbose = 5)
+
+# Plot the results to choose the best power
+sizeGrWindow(9, 5)
+par(mfrow = c(1, 2))
+cex1 <- 0.9
+plot(sft$fitIndices[, 1], -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     xlab = "Soft Threshold (power)",
+     ylab = "Scale Free Topology Model Fit, signed R^2",
+     type = "n", main = "Scale independence")
+text(sft$fitIndices[, 1], -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     labels = powers, cex = cex1, col = "red")
+abline(h = 0.90, col = "red")  # This line corresponds to using an R^2 cut-off of h
+
+plot(sft$fitIndices[, 1], sft$fitIndices[, 5],
+     xlab = "Soft Threshold (power)", ylab = "Mean Connectivity", type = "n",
+     main = "Mean connectivity")
+text(sft$fitIndices[, 1], sft$fitIndices[, 5], labels = powers, cex = cex1, col = "red")
+```
+
+## Construct the Network and Identify Modules
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Choose the power based on the above plot
+softPower <- 8 
+
+# Construct the adjacency matrix
+adjacency <- adjacency(data, power = softPower)
+
+# Turn adjacency into topological overlap matrix (TOM) and calculate the dissimilarity
+TOM <- TOMsimilarity(adjacency)
+dissTOM <- 1 - TOM
+
+# Perform hierarchical clustering
+geneTree <- hclust(as.dist(dissTOM), method = "average")
+
+# Module identification using dynamic tree cut
+dynamicMods <- cutreeDynamic(dendro = geneTree, distM = dissTOM,
+                             deepSplit = 2, pamRespectsDendro = FALSE,
+                             minClusterSize = 30)
+
+# Convert numeric labels into colors
+dynamicColors <- labels2colors(dynamicMods)
+table(dynamicColors)
+
+# Plot the dendrogram and the module colors
+sizeGrWindow(8, 6)
+plotDendroAndColors(geneTree, dynamicColors, "Dynamic Tree Cut",
+                    dendroLabels = FALSE, hang = 0.03,
+                    addGuide = FALSE, guideHang = 0.05)
+```
+
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+# Load your outcome/trait data
+traits <- data.frame("obese" = lipid_subData[,898])
+
+# Match samples between metabolomics data and trait data - lipid and obesity data are matched already
+# matchedSamples <- intersect(rownames(data), rownames(traits))
+# data <- data[matchedSamples, ]
+# traits <- traits[matchedSamples, ]
+
+# Calculate module eigengenes
+MEs <- moduleEigengenes(data, colors = dynamicColors)$eigengenes
+MEs <- orderMEs(MEs)
+
+# Correlate module eigengenes with external traits
+moduleTraitCor <- cor(MEs, traits, use = "p")
+moduleTraitPvalue <- corPvalueStudent(moduleTraitCor, nrow(data))
+
+# Plot the heatmap of module-trait relationships
+sizeGrWindow(10, 6)
+textMatrix <- paste(signif(moduleTraitCor, 2), "\n(",
+                    signif(moduleTraitPvalue, 1), ")", sep = "")
+dim(textMatrix) <- dim(moduleTraitCor)
+par(mar = c(6, 8.5, 3, 3))
+labeledHeatmap(Matrix = moduleTraitCor,
+               xLabels = names(traits),
+               yLabels = names(MEs),
+               ySymbols = names(MEs),
+               colorLabels = FALSE,
+               colors = blueWhiteRed(50),
+               textMatrix = textMatrix,
+               setStdMargins = FALSE,
+               cex.text = 0.5,
+               zlim = c(-1, 1),
+               main = paste("Module-trait relationships"))
+
+
+```
+
+## Network heatmap plot visulization
+```{r}
+# Calculate topological overlap anew: this could be done more efficiently by saving the TOM
+# calculated during module detection, but let us do it again here.
+dissTOM = 1-TOMsimilarityFromExpr(data, power = softPower)
+# Transform dissTOM with a power to make moderately strong connections more visible in the heatmap
+plotTOM = dissTOM^3;
+# Set diagonal to NA for a nicer plot
+diag(plotTOM) = NA
+sizeGrWindow(9,9)
+TOMplot(plotTOM, geneTree, dynamicColors, main = "Network heatmap plot")
+
+```
+
+
