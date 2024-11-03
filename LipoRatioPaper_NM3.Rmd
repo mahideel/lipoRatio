@@ -1,0 +1,3499 @@
+---
+title: "NoviaLipoRatioPaper - Obesity only"
+author: "Novia Minaee"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+<style type="text/css">
+.main-container {
+  max-width: 1200px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+<style>
+  @media print {
+    body {
+       display: table;
+       table-layout: fixed;
+       padding-top: 0.5cm;
+       padding-bottom: 0.5cm;
+       height: auto;
+    }
+  }
+  body {
+    margin:0;
+    padding:0;
+  }
+  .flat-table {
+    display: block;
+    font-family: sans-serif;
+    -webkit-font-smoothing: antialiased;
+    font-size: 115%;
+    overflow: auto;
+    width: auto;
+  }
+  thead {
+    background-color: rgb(254, 254, 254);
+    color: black;
+    font-weight: normal;
+    padding: 0px 0px;
+    text-align: center;
+  }
+  tbody {
+    background-color: rgb(254, 254, 254);
+    color: rgb(70, 70, 70);
+    padding: 0px 0px;
+  }
+  table, th, td{
+        border: 1px solid #666;
+    }
+  table th, table td{
+        padding: 3px; 
+    }
+</style>
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE,warning = FALSE,cache = FALSE)
+library(dplyr)
+library(gtsummary)
+library(ggplot2)
+library(tidyr)
+library(htmlTable)
+library(knitr)
+library(corrplot)
+#library(mva.plots)
+library(fusion)
+#library(nmr.parser)
+library(tidyverse)
+
+# install.packages("/Users/novia/Downloads/Telegram Desktop/rldx", repos=NULL, type="source")
+
+library(rldx)
+
+devtools::load_all("~/git/phenological/nmr-parser/")
+devtools::load_all("~/git/phenological/uva-plots/")
+devtools::load_all("~/git/phenological/fusion/")
+devtools::load_all("~/git/phenological/mva-plots/") # so can do split correlation plot function
+
+```
+
+```{r}
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures/Obesity/"
+```
+
+
+Following Reika's DOb_BHAS_demographics.Rmd script to make sure my numbers tally-up. 
+Notes: Busselton Grouping is DM or NDM status 
+
+Both Type 1 and Type 2 DM --> DM (using Summary_Diabetes_idx 1 or 0)
+
+For BMI category
+(18.5,25] = "Healthy"
+(25,30] = "OverWeight"
+(30,70] = "Obese"
+
+remove those underweight participants
+# Busselton 
+```{r}
+#setting the path 
+Sys.setenv(DATASETS = "/Users/novia/DATASETS")
+pathToData <- file.path(Sys.getenv()['DATASETS'], "Busselton")
+
+
+# Lipo
+lipo<-local(get(load(file.path(pathToData,"DataElements","Busselton_PLA_LIPO.daE"))))
+
+Lipo<-data.frame(apply(lipo@.Data,2,as.numeric))
+Lipo_Ann<-lipo@obsDescr[[1]]
+
+
+# SPC
+spc<-local(get(load(file.path(pathToData,"DataElements","busselton_C1_PLA_BHASr03@local_dire@prof_plasma_dire_anpc_SpcGlyc.daE"))))
+
+SPC<-data.frame(apply(spc@.Data,2,as.numeric))
+SPC_Ann<-spc@obsDescr[[1]]
+SPC_Ann$sampleID<-sapply(strsplit(SPC_Ann$sampleID, "_"),"[",1)
+
+
+# Annotation 
+Anno1<-read.csv(file.path(pathToData,"rawData", "meta", "Anno_t1_MH_new.csv"))
+
+Anno1%>%select(sampleID,age,sex,bmi,Diabetes_Type,Summary_Diabetes_idx)%>%
+  rename(Age = age,
+         Sex = sex,
+         BMI = bmi,
+         DM = Summary_Diabetes_idx)%>%
+  mutate(cohort = "Busselton",
+         BMI_cat = cut(BMI,
+                       c(18.5,25,30,70),
+                       labels = c("Healthy","OverWeight","Obese"),
+                       levels = c("Healthy","OverWeight","Obese")),
+                       #labels = c("<25","25-30",">30"),
+                       #levels = c("<25","25-30",">30")),
+         DM = ifelse(DM==1,"DM","NDM"),
+         DM = factor(DM, level = c("NDM", "DM"))
+         )%>%
+  dplyr::filter(!is.na(BMI_cat)) ->Anno1
+
+## Remove hye Type 1 Diabetes from analysis 
+idx <- which(Anno1$Diabetes_Type == 1) #9 
+Anno1 <- Anno1[-idx, ]
+Anno1 <- Anno1 %>% select(!Diabetes_Type) 
+
+
+Lipo<-Lipo[which(Lipo_Ann$sampleID %in% Anno1$sampleID),]
+Lipo_Ann<-Lipo_Ann[which(Lipo_Ann$sampleID %in% Anno1$sampleID),]
+SPC<-SPC[which(SPC_Ann$sampleID %in% Anno1$sampleID),]
+SPC_Ann<-SPC_Ann[which(SPC_Ann$sampleID %in% Anno1$sampleID),]
+
+Lipo<-Lipo[match(Anno1$sampleID, Lipo_Ann$sampleID),]
+SPC<-SPC[match(Anno1$sampleID, SPC_Ann$sampleID),]
+
+BHA_Lipo<-Lipo
+BHA_SPC<-SPC
+BHA_Anno<-Anno1
+
+table(BHA_Anno$DM, BHA_Anno$BMI_cat)
+
+table(BHA_Anno$sampleID == Lipo_Ann$sampleID) # TRUE 1960
+
+#table(rownames(BHA_Lipo) == rownames(Lipo_Ann)) # TRUE 1960
+
+# NOTE TO SELF: Lipo (which becomes BHA_Lipo) and Lipo_Ann are matched by rownames. Lipo_Ann and Anno1 (which becomes BHA_Anno) are matched by sampleID.
+# Therefore BHA_Lipo and BHA_Anno are matched. 
+
+rm(lipo, Lipo, Lipo_Ann, spc, SPC, SPC_Ann, Anno1, idx)
+```
+
+
+
+# Saudi
+```{r}
+#setting the path 
+pathToData <- file.path(Sys.getenv()['DATASETS'], "Saudi")
+
+# Lipo
+lipo<-local(get(load(file.path(pathToData,"DataElements","DiaObesity_LIPO.daE"))))
+
+Lipo<-data.frame(apply(lipo@.Data,2,as.numeric))
+Lipo_Ann<-lipo@obsDescr[[1]]
+
+# Annotation
+Anno1<-local(get(load(file.path(pathToData,"DataElements","DiaObesity_ANNO.daE"))))
+Anno1<-Anno1@obsDescr[[1]]
+
+Anno1%>%select(sampleID,`File No:`, Age,Gender,BMI,`Presence of any known diseases`)%>%
+  rename(File.No. = `File No:`,
+         Sex = Gender,
+         DM = `Presence of any known diseases`)%>%
+  mutate(cohort = "DiaObesity",
+         BMI_cat = cut(BMI,
+                       c(18.5,25,30,70),
+                       labels = c("Healthy","OverWeight","Obese"),
+                       levels = c("Healthy","OverWeight","Obese")),                       
+                       # labels = c("<25","25-30",">30"),
+                       # levels = c("<25","25-30",">30")),
+         DM = ifelse(grepl("1",DM),"T1DM",DM), #grab "1" and rename as T1DM in DM column 
+         DM = ifelse(grepl("2",DM),"DM",DM), #grab "1" and rename as DM in DM column 
+         DM = ifelse(!grepl("DM",DM),"NDM",DM),
+         Sex = ifelse(grepl("F",Sex),"F","M"))%>%
+  dplyr::filter(DM!="T1DM")%>%
+  mutate(DM = factor(DM, level = c("NDM", "DM"))) %>%
+  dplyr::filter(!is.na(BMI_cat))->Anno1
+  
+Lipo<-Lipo[which(Lipo_Ann$sampleID %in% Anno1$sampleID),]
+Lipo_Ann<-Lipo_Ann[which(Lipo_Ann$sampleID %in% Anno1$sampleID),]
+Anno1<-Anno1[match(Lipo_Ann$sampleID,Anno1$sampleID),]
+
+table(Anno1$DM, Anno1$BMI_cat)
+  #     Healthy OverWeight Obese
+  # NDM       58         20    56
+  # T2DM       6          5    44
+
+Dia_Lipo<-Lipo
+Dia_Anno<-Anno1
+
+
+rm(Lipo,Lipo_Ann,Anno1,pathToData,lipo)
+
+```
+
+# Statin
+Busselton
+```{r}
+#setting the path 
+Sys.setenv(DATASETS = "/Users/novia/DATASETS")
+pathToData <- file.path(Sys.getenv()['DATASETS'], "Busselton")
+Annotation<-read.csv(file.path(pathToData,"rawData", "meta", "Anno_t1_MH_new.csv"))[,-1]
+Annotation<-Annotation[match(BHA_Anno$sampleID,Annotation$sampleID),]
+##############################
+# lipids_lowering medication
+Annotation$lipids_lowering<-ifelse(grepl("STATIN|FIBRATE|EZETIMIBE|PCSK9|hyperlipidemia|Antihyperlipidemic|HMG-CoA_reductase_inhibitor|Lipid_lowering_treatment",unite(Annotation,col = "Medication",grep("med",colnames(Annotation)),sep = " / ")$Medication, ignore.case = T),1,0)
+##############################
+
+BHA_Anno <- cbind(BHA_Anno, statin = Annotation$lipids_lowering)
+
+table(BHA_Anno$statin, BHA_Anno$BMI_cat)
+  #   Healthy OverWeight Obese
+  # 0     486        728   427
+  # 1      35        154   130
+```
+
+Saudi 
+```{r}
+saudrug <- read.csv("/Users/novia/Desktop/Diabetes_Obesity/From Sam/Copy of for sam drugs 110422.csv", header=TRUE)
+
+Dia <- cbind(Dia_Lipo, Dia_Anno)
+Dia <- inner_join(Dia, saudrug, by = "File.No.")
+
+Dia$lipid_lowering <- ifelse(Dia$metaformin == 1 | Dia$statin == 1, 1, 0)
+
+Dia <- Dia %>% mutate(BMI_cat = recode(BMI_cat, Healthy = "<25", OverWeight = "25-30", Obese = ">30"))
+Dia$lipid_lowering <- ifelse(Dia$lipid_lowering == 0, "No Statin", "Statin")
+
+summarised_data <- Dia %>%
+  dplyr::filter(cohort == "DiaObesity" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat, DM, lipid_lowering) %>%
+  summarise(count = n(), .groups = 'drop') %>%
+  pivot_wider(names_from = lipid_lowering, values_from = count, values_fill = 0)  # Pivot to wide format
+
+summarised_data
+# HW, Non-diabetic - none taking statin/metformin.  
+# Ob, Non-diabetic - 1 person taking statin/metformin
+# No stratification based on lipid-lowering medification for Saudi (NM 31/10/2024)
+```
+
+
+
+# Lipoprotein Sup Mat table << need to be revamped to be stratified by BMI_cat, not DMI. 
+```{r}
+library(gtsummary)
+cbind(BHA_Anno%>%
+        select(DM,BMI_cat),BHA_Lipo)%>%
+  tbl_strata(
+    strata = DM,
+    .tbl_fun =
+      ~ .x %>%
+        tbl_summary(by = BMI_cat,
+                    statistic = all_continuous() ~ "{median} ± {sd}",
+                    missing = "no") %>%
+        add_p(group = NULL),
+    .header = "**{strata}**, N = {n}"
+  )->tble_bus
+  
+cbind(Dia_Anno%>%
+        select(DM,BMI_cat),
+      Dia_Lipo)%>%
+  tbl_strata(
+    strata = DM,
+    .tbl_fun =
+      ~ .x %>%
+        tbl_summary(by = BMI_cat,
+                    statistic = all_continuous() ~ "{median} ± {sd}",
+                    missing = "no") %>%
+        add_p(),
+    .header = "**{strata}**, N = {n}"
+  )->tble_sau
+  
+
+tbl_merge_ex1 <-
+  tbl_merge(
+    tbls = list(tble_bus,tble_sau),
+    tab_spanner = c("**Busselton**", "**Saudi**")
+  )
+
+tbl_merge_ex1
+
+#write.csv(tbl_merge_ex1, file = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Bus_Sau_tbl_merge_ex1.csv", fileEncoding = "UTF-8") # not working properly, weird plus minus signs. 
+
+library(writexl)
+
+my_table <- as.data.frame(tbl_merge_ex1)
+
+# Write to Excel file
+# write_xlsx(my_table, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Bus_Sau_tbl_merge_ex1.xlsx")
+
+```
+
+# Demographics
+
+### *Busselton* -- TO REDO and regroup based on BMI_cat, not on Diabetes status 
+```{r}
+#setting the path 
+Sys.setenv(DATASETS = "/Users/novia/DATASETS")
+pathToData <- file.path(Sys.getenv()['DATASETS'], "Busselton")
+Annotation<-read.csv(file.path(pathToData,"rawData", "meta", "Anno_t1_MH_new.csv"))[,-1]
+Annotation<-Annotation[match(BHA_Anno$sampleID,Annotation$sampleID),]
+
+### Alcohole consumption ###
+drinking<-Annotation[,grep("dn7",colnames(Annotation))]
+
+for(i in 1:ncol(drinking)){
+  drinking[,i]<-drinking[,i]-2
+}
+
+for(i in 1:ncol(drinking)){
+  drinking[,i]<-gsub("-2","0",gsub("-1","0.2",gsub("0","0.5",drinking[,i])))
+}
+
+for(i in 1:ncol(drinking)){
+  drinking[which(is.na(drinking[,i])),i]<-0
+}
+
+drinking<-apply(drinking, 2,as.numeric)
+
+drinking<-data.frame(drinking)
+maximum<-apply(drinking,1,max) # alcohol_days_maximum
+total<-apply(drinking,1,sum) # alcohol_days_total
+total[which(total>7)]<-7 # total that are greater than 7 are replaced by 7 ( since 7 days a week is the maximum)
+days_drink<-(total+maximum)/2 # take the mean values between total and the maximum drinking days per week 
+
+Drinks<-Annotation$dn8
+#Drinks<-Anno_t1_MH$`DN_Alcohol/number_of_glasses`
+Drinks[which(is.na(Drinks))]<-0
+
+Annotation$alcohol_glasses_per_week=Drinks*days_drink
+rm(days_drink,Drinks,i,maximum, total,drinking)
+############################
+# Physical Activity
+      # moderate
+      # hours pa4a
+      # minutes pa4b
+mod_hours<-Annotation$pa4a
+mod_hours[which(is.na(mod_hours))]<-0
+mod_hours<-mod_hours*60
+mod_min<-Annotation$pa4b
+mod_min[which(is.na(mod_min))]<-0
+moderatePA<-as.numeric(mod_hours)+as.numeric(mod_min)
+Annotation$moderatePA<-moderatePA*7
+remove(mod_hours,mod_min,moderatePA)
+
+# vigorous
+mod_hours<-Annotation$pa2a
+mod_hours[which(is.na(mod_hours))]<-0
+mod_hours<-mod_hours*60
+mod_min<-Annotation$pa2b
+mod_min[which(is.na(mod_min))]<-0
+vigorousPA<-as.numeric(mod_hours)+as.numeric(mod_min)
+Annotation$vigorousPA<-vigorousPA*7
+remove(mod_hours,mod_min,vigorousPA)
+##############################
+# lipids_lowering medication
+Annotation$lipids_lowering<-ifelse(grepl("STATIN|FIBRATE|EZETIMIBE|PCSK9|hyperlipidemia|Antihyperlipidemic|HMG-CoA_reductase_inhibitor|Lipid_lowering_treatment",unite(Annotation,col = "Medication",grep("med",colnames(Annotation)),sep = " / ")$Medication, ignore.case = T),1,0)
+##############################
+
+cbind(BHA_Anno%>%select(Age,Sex,BMI,DM,BMI_cat)%>%
+        mutate(DM = factor(DM)),
+      Annotation%>%
+  select(
+         height,
+         weight,
+         waist,
+         sbp,
+         dbp,
+         glycated_haemoglobin,
+         c_reactive_protein,
+         sm1,
+         sm1,
+         sm2,
+         alcohol_glasses_per_week,
+         moderatePA,
+         vigorousPA,
+         an_med,
+         lipids_lowering,
+         Summary_Diabetes_idx,
+         Summary_Cardiovascular_idx,)%>%
+  mutate(smoking = ifelse(as.numeric(sm1)==1,"Past","Never"),
+         smoking = ifelse(as.numeric(sm1)==1 & as.numeric(sm2)==1,"Current",smoking),
+          `Blood pressure medication`= ifelse(grepl("Calcium_channel_blocker|Angiotensin|Antihypertensive|hypertension|Blood_pressure_lowering",an_med),1,0))%>%
+  rename(`Height (m)` = height,
+         `Weight (kg)` = weight,
+         `Waist circumference (cm)` = waist,
+         `Systolic blood pressure (mmHg)` = sbp,
+         `Diastolic blood pressure (mmHg)` = dbp,
+         `HbA1c (%)` = glycated_haemoglobin,
+         `C-reactive protein (ug/L)` = c_reactive_protein,
+         `Alcohol consumption (std drinks/week)` = alcohol_glasses_per_week,
+         # `Red meat (days/week)` = dn1a,
+         # `Chicken/poultry (days/week)` = dn1b,
+         # `Fish (days/week)` = dn1d,
+         # `Cooked vegetables (serves/day)` = dn4a,
+         # `Raw vegetables (serves/day)` = dn4b,
+         # `Fruit (serves/day)` = dn5a,
+         `Lipid-lowering medication` = lipids_lowering,
+         `Diabetes` = Summary_Diabetes_idx,
+         `Cardiovascular disease` = Summary_Cardiovascular_idx,
+         `Moderate physical activity (mins/week)` = moderatePA,
+         `Vigorous physical activity (mins/week)` = vigorousPA)%>%
+  select(-c(sm1,sm2,an_med))%>%
+  relocate(where(is.character))%>%
+  relocate(`Blood pressure medication`,.before =`Lipid-lowering medication` )%>%
+  mutate(`Systolic blood pressure (mmHg)`  = ifelse(is.na(`Systolic blood pressure (mmHg)` ),NA,as.numeric(`Systolic blood pressure (mmHg)` )),
+         `Diastolic blood pressure (mmHg)` = ifelse(is.na(`Diastolic blood pressure (mmHg)`),NA,as.numeric(`Diastolic blood pressure (mmHg)`))))->tble_bus_demo
+
+
+tble_bus_demo%>%
+  tbl_strata(
+    strata = DM,
+    .tbl_fun =
+      ~ .x %>%
+        tbl_summary(by = BMI_cat,
+                    statistic = all_continuous() ~ "{median} ± {sd}",
+                    missing = "no") %>%
+        add_p(group = NULL),
+    .header = "**{strata}**, N = {n}"
+  )->tble_bus_demo
+
+rm(Annotation)
+tble_bus_demo
+```
+
+
+### *SAUDI* - TO REDO and regroup based on BMI_cat, not DM
+```{r}
+library(readxl)
+Annotation<-read_excel("~/git/phenocare/diabetes/DiaObesity/originalFiles/Randomised diabesity.xlsx",sheet = 2)
+Annotation<-Annotation%>%
+  mutate(sampleID = make.unique(paste0("SAUD_",seq(1,nrow(Annotation),by=1)),sep = "."))%>%
+  select(sampleID,
+         Height,
+         Weight,
+         `Waist Circumference`,
+         `Blood Pressure - Systolic`,
+         `Blood Pressure - Diastolic`,
+         `Smoking?`,
+         `Exercise or Physical Activities (moderate)  for more than 30 min in a day.`
+         )%>%
+  rename(`Height (m)` = Height,
+         `Weight (kg)` = Weight,
+         `Waist circumference (cm)` = `Waist Circumference`,
+         `Systolic blood pressure (mmHg)` = `Blood Pressure - Systolic`,
+         `Diastolic blood pressure (mmHg)` = `Blood Pressure - Diastolic`,
+         Smoking = `Smoking?`,
+         `Moderate physical activity (>30 mins/day)` = `Exercise or Physical Activities (moderate)  for more than 30 min in a day.`)
+
+Annotation<-Annotation[match(Dia_Anno$sampleID,Annotation$sampleID),]
+
+cbind(Dia_Anno%>%select(Age,Sex,BMI,DM,BMI_cat),
+      Annotation)%>%select(!sampleID)%>%
+  tbl_strata(
+    strata = DM,
+    .tbl_fun =
+      ~ .x %>%
+        tbl_summary(by = BMI_cat,
+                    statistic = all_continuous() ~ "{median} ± {sd}",
+                    missing = "no") %>%
+        add_p(),
+    .header = "**{strata}**, N = {n}"
+  )->tble_sau_demo
+  
+tble_sau_demo
+
+rm(Annotation)
+```
+
+
+### additional test for demography - don't end up needing this but good to keep
+```{r, eval = FALSE}
+anno1 <- BHA_Anno
+anno1$comb <- gsub("\\s","", paste(anno1$BMI_cat,"_", anno1$DM))
+
+anno2 <- Dia_Anno
+anno2$comb <- gsub("\\s","", paste(anno2$BMI_cat,"_", anno2$DM))
+
+anno1 %>%
+  dplyr::filter(comb %in% c("Obese_NDM", "Obese_DM")) %>%
+  summarize(age_test = wilcox.test(Age ~ comb)$p.value,
+            bmi_test = wilcox.test(BMI ~ comb)$p.value)
+
+anno1 %>%
+  dplyr::filter(comb %in% c("Healthy_DM", "Obese_DM")) %>%
+  summarize(age_test = wilcox.test(Age ~ comb)$p.value,
+            bmi_test = wilcox.test(BMI ~ comb)$p.value)
+
+```
+
+
+
+# Fig1. Line chart - Busselton
+(parallel coordinates chart)
+## all
+```{r, fig.width=20, fig.height=15}
+library(GGally)
+library(ggpubr)
+
+#lipo_name<-c("CH","TG","PL","PN","FC","A1|A2|AB")
+lipo_name<-c("CH","FC","PL", "TG")
+
+tdf <- BHA_Lipo
+#relocate VLCH and IDCH before LDCH to be consistent with TG, PL and FC and if decided not to use TPCH and TPTG
+tdf <- tdf %>%
+  relocate(c("VLCH", "IDCH"), .before = "LDCH") %>% select(-c(TPCH, TPTG))
+
+tdf$BMI_cat<- factor(BHA_Anno$BMI_cat, levels = c("Healthy", "OverWeight", "Obese"))
+
+tdf <- tdf %>% mutate(BMI_cat = recode(BMI_cat, Healthy = "<25", OverWeight = "25-30", Obese = ">30"))
+
+p1 <- list()
+# Loop over each lipid class in lipo_name
+for (l in lipo_name) {
+  # If the current class is "A1|A2|AB", use grep to match the specific pattern
+  if (l == "A1|A2|AB") {
+    selected_vars <- grep("A1|A2|AB", colnames(tdf), value = TRUE)
+  } else {
+    # Otherwise, use contains to match the general classes (e.g., "CH", "TG", etc.)
+    selected_vars <- grep(l, colnames(tdf), value = TRUE)
+  }
+
+  # Filter the data for 'Healthy' BMI_cat and select the appropriate columns
+  tdf1 <- data.frame(
+    Group1 = apply(na.omit(
+      tdf %>%
+        dplyr::filter(BMI_cat == "<25") %>%
+        select(all_of(selected_vars))
+    ), 2, median),
+    Group2 = apply(na.omit(
+        tdf %>% 
+          dplyr::filter(BMI_cat == "25-30") %>% 
+          select(all_of(selected_vars))
+      ), 2, median),
+    Group3 = apply(na.omit(
+       tdf %>% 
+         dplyr::filter(BMI_cat == ">30") %>% 
+         select(all_of(selected_vars))
+      ), 2, median)
+    )
+  
+  # re-scale # if using this, make sure to set ggparcoord scale = "globalminmax" so not to double scale
+  for (j in 1:nrow(tdf1)) {
+    tdf1[j, ] <- tdf1[j, ] / max(tdf1[j, ])
+  }
+    
+  tdf1 <- data.frame(t(tdf1))
+  
+  tdf1 <- tdf1 %>% tibble::rownames_to_column(var = "BMI")
+  
+  tdf1$BMI <- recode(tdf1[[1]], Group1 = "<25", Group2 = "25-30", Group3 = ">30")
+  
+  p<-ggparcoord(tdf1,
+    columns = 2:ncol(tdf1), groupColumn = 1, scale = "globalminmax",
+    showPoints = TRUE, 
+    alphaLines = 0.3
+    ) + xlab("") + ylab("") +
+    scale_color_manual(values = c("<25" = "#00BFC4", "25-30" = "#FFC425", ">30" = "#F8766D")) +  
+     geom_line(size=0.6) + theme(
+      axis.text = element_text(size = 14),           # Increase axis text size
+      axis.title = element_text(size = 20),          # Increase axis title size
+      axis.line = element_line(size = 0.6),
+      axis.text.x = element_text(hjust = 1, angle = 90),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+     )
+  p1_legend<-get_legend(p)    
+  p1_legend<-as_ggplot(p1_legend)   
+  p1[[l]]<-p+theme(legend.position = "none")
+
+  #rm(tdf1,j,l,lipo_name, selected_vars)
+}
+
+library(gridExtra)
+
+
+ggarrange(p1[[1]], p1[[4]], p1[[3]], p1[[2]], nrow=4)
+
+library(cowplot)
+
+# Extract the legend from one indiv plot
+p1_legend <- get_legend(p)  
+
+# Remove the title and legend from individual plots
+p1_no_title <- lapply(p1, function(p) p + theme(legend.position = "none", plot.title = element_blank()))
+
+# Arrange the plots with the legend to the right
+final_plot <- grid.arrange(
+  ggarrange(plotlist = p1_no_title, nrow = 4),  # Subplots without titles and legends
+  p1_legend,  # Common legend on the right
+  ncol = 2,  # Use 2 columns: one for plots and one for the legend
+  widths = c(3, 0.5)  # Adjust the relative width of the plot and legend
+)
+
+annotate_figure(final_plot, top = text_grob("Busselton", color = "black", face = "bold", size = 15))
+
+
+svglite::svglite(filename = file.path(pathToPlot,"RadarPlotBusselton_NDM.svg"))
+final_plot <- grid.arrange(
+  ggarrange(plotlist = p1_no_title, nrow = 4),  # Subplots without titles and legends
+  p1_legend,  # Common legend on the right
+  ncol = 2,  # Use 2 columns: one for plots and one for the legend
+  widths = c(3, 0.5)  # Adjust the relative width of the plot and legend
+)
+dev.off()
+
+
+rm(tdf, p, p1_legend, p1, p1_no_title, final_plot)
+
+```
+
+
+## Taking statin - Sup Fig1
+```{r, fig.width=20, fig.height=15}
+library(GGally)
+library(ggpubr)
+
+#lipo_name<-c("CH","TG","PL","PN","FC","A1|A2|AB")
+lipo_name<-c("CH","FC","PL", "TG")
+
+tdf <- BHA_Lipo 
+
+#relocate VLCH and IDCH before LDCH to be consistent with TG, PL and FC and if decided not to use TPCH and TPTG
+tdf <- tdf %>%
+  relocate(c("VLCH", "IDCH"), .before = "LDCH") %>% select(-c(TPCH, TPTG))
+
+tdf$BMI_cat<- factor(BHA_Anno$BMI_cat, levels = c("Healthy", "OverWeight", "Obese"))
+tdf$statin <- BHA_Anno$statin
+tdf$DM <- BHA_Anno$DM
+
+tdf <- tdf %>% mutate(BMI_cat = recode(BMI_cat, Healthy = "<25", OverWeight = "25-30", Obese = ">30"))
+
+p1 <- list()
+# Loop over each lipid class in lipo_name
+for (l in lipo_name) {
+  # If the current class is "A1|A2|AB", use grep to match the specific pattern
+  if (l == "A1|A2|AB") {
+    selected_vars <- grep("A1|A2|AB", colnames(tdf), value = TRUE)
+  } else {
+    # Otherwise, use contains to match the general classes (e.g., "CH", "TG", etc.)
+    selected_vars <- grep(l, colnames(tdf), value = TRUE)
+  }
+
+  # Filter the data for 'Healthy' BMI_cat and select the appropriate columns
+  tdf1 <- data.frame(
+    Group1 = apply(na.omit(
+      tdf %>%
+        dplyr::filter(BMI_cat == "<25" & statin == 1 & DM == "NDM") %>%
+        select(all_of(selected_vars))
+    ), 2, median),
+    Group2 = apply(na.omit(
+        tdf %>% 
+          dplyr::filter(BMI_cat == "25-30" & statin == 1 & DM == "NDM") %>% 
+          select(all_of(selected_vars))
+      ), 2, median),
+    Group3 = apply(na.omit(
+       tdf %>% 
+         dplyr::filter(BMI_cat == ">30" & statin == 1 & DM == "NDM") %>% 
+         select(all_of(selected_vars))
+      ), 2, median)
+    )
+  
+  # re-scale # if using this, make sure to set ggparcoord scale = "globalminmax" so not to double scale
+  for (j in 1:nrow(tdf1)) {
+    tdf1[j, ] <- tdf1[j, ] / max(tdf1[j, ])
+  }
+    
+  tdf1 <- data.frame(t(tdf1))
+  
+  tdf1 <- tdf1 %>% tibble::rownames_to_column(var = "BMI")
+  
+  tdf1$BMI <- recode(tdf1[[1]], Group1 = "<25", Group2 = "25-30", Group3 = ">30")
+  
+  p<-ggparcoord(tdf1,
+    columns = 2:ncol(tdf1), groupColumn = 1, scale = "globalminmax",
+    showPoints = TRUE, 
+    alphaLines = 0.3
+    ) + xlab("") + ylab("") +
+    scale_color_manual(values = c("<25" = "#00BFC4", "25-30" = "#FFC425", ">30" = "#F8766D")) +  
+     geom_line(size=0.6) + theme(
+      axis.text = element_text(size = 14),           # Increase axis text size
+      axis.title = element_text(size = 20),          # Increase axis title size
+      axis.line = element_line(size = 0.6),
+      axis.text.x = element_text(hjust = 1, angle = 90),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+     )
+  p1_legend<-get_legend(p)    
+  p1_legend<-as_ggplot(p1_legend)   
+  p1[[l]]<-p+theme(legend.position = "none")
+
+  #rm(tdf1,j,l,lipo_name, selected_vars)
+}
+
+library(gridExtra)
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures/Obesity"
+
+ggarrange(p1[[1]], p1[[4]], p1[[3]], p1[[2]], nrow=4)
+
+
+# svglite::svglite(filename = file.path(pathToPlot,"RadarPlotBusseltonLegendv2.svg"))
+# plot(p1_legend)
+# dev.off()
+
+library(cowplot)
+
+# Extract the legend from one indiv plot
+p1_legend <- get_legend(p)  
+
+# Remove the title and legend from individual plots
+p1_no_title <- lapply(p1, function(p) p + theme(legend.position = "none", plot.title = element_blank()))
+
+# Arrange the plots with the legend to the right
+final_plot <- grid.arrange(
+  ggarrange(plotlist = p1_no_title, nrow = 4),  # Subplots without titles and legends
+  p1_legend,  # Common legend on the right
+  ncol = 2,  # Use 2 columns: one for plots and one for the legend
+  widths = c(3, 0.5)  # Adjust the relative width of the plot and legend
+)
+
+annotate_figure(final_plot, top = text_grob("Busselton_NDM_STATIN", color = "black", face = "bold", size = 15))
+
+svglite::svglite(filename = file.path(pathToPlot,"RadarPlotBusselton_NDM_Statin.svg"))
+final_plot <- grid.arrange(
+  ggarrange(plotlist = p1_no_title, nrow = 4),  # Subplots without titles and legends
+  p1_legend,  # Common legend on the right
+  ncol = 2,  # Use 2 columns: one for plots and one for the legend
+  widths = c(3, 0.5)  # Adjust the relative width of the plot and legend
+)
+dev.off()
+
+#rm(tdf, p, p1_legend, p1, p1_no_title, final_plot)
+
+```
+
+
+## NOT taking statin - Sup Fig1
+```{r, fig.width=20, fig.height=15}
+library(GGally)
+library(ggpubr)
+
+#lipo_name<-c("CH","TG","PL","PN","FC","A1|A2|AB")
+lipo_name<-c("CH","FC","PL", "TG")
+
+tdf <- BHA_Lipo 
+
+#relocate VLCH and IDCH before LDCH to be consistent with TG, PL and FC and if decided not to use TPCH and TPTG
+tdf <- tdf %>%
+  relocate(c("VLCH", "IDCH"), .before = "LDCH") %>% select(-c(TPCH, TPTG))
+
+tdf$BMI_cat<- factor(BHA_Anno$BMI_cat, levels = c("Healthy", "OverWeight", "Obese"))
+tdf$statin <- BHA_Anno$statin
+tdf$DM <- BHA_Anno$DM
+
+tdf <- tdf %>% mutate(BMI_cat = recode(BMI_cat, Healthy = "<25", OverWeight = "25-30", Obese = ">30"))
+
+p1 <- list()
+# Loop over each lipid class in lipo_name
+for (l in lipo_name) {
+  # If the current class is "A1|A2|AB", use grep to match the specific pattern
+  if (l == "A1|A2|AB") {
+    selected_vars <- grep("A1|A2|AB", colnames(tdf), value = TRUE)
+  } else {
+    # Otherwise, use contains to match the general classes (e.g., "CH", "TG", etc.)
+    selected_vars <- grep(l, colnames(tdf), value = TRUE)
+  }
+
+  # Filter the data for 'Healthy' BMI_cat and select the appropriate columns
+  tdf1 <- data.frame(
+    Group1 = apply(na.omit(
+      tdf %>%
+        dplyr::filter(BMI_cat == "<25" & statin == 0 & DM == "NDM") %>%
+        select(all_of(selected_vars))
+    ), 2, median),
+    Group2 = apply(na.omit(
+        tdf %>% 
+          dplyr::filter(BMI_cat == "25-30" & statin == 0 & DM == "NDM" ) %>% 
+          select(all_of(selected_vars))
+      ), 2, median),
+    Group3 = apply(na.omit(
+       tdf %>% 
+         dplyr::filter(BMI_cat == ">30" & statin == 0 & DM == "NDM") %>% 
+         select(all_of(selected_vars))
+      ), 2, median)
+    )
+  
+  # re-scale # if using this, make sure to set ggparcoord scale = "globalminmax" so not to double scale
+  for (j in 1:nrow(tdf1)) {
+    tdf1[j, ] <- tdf1[j, ] / max(tdf1[j, ])
+  }
+    
+  tdf1 <- data.frame(t(tdf1))
+  
+  tdf1 <- tdf1 %>% tibble::rownames_to_column(var = "BMI")
+  
+  tdf1$BMI <- recode(tdf1[[1]], Group1 = "<25", Group2 = "25-30", Group3 = ">30")
+  
+  p<-ggparcoord(tdf1,
+    columns = 2:ncol(tdf1), groupColumn = 1, scale = "globalminmax",
+    showPoints = TRUE, 
+    alphaLines = 0.3
+    ) + xlab("") + ylab("") +
+    scale_color_manual(values = c("<25" = "#00BFC4", "25-30" = "#FFC425", ">30" = "#F8766D")) +  
+     geom_line(size=0.6) + theme(
+      axis.text = element_text(size = 14),           # Increase axis text size
+      axis.title = element_text(size = 20),          # Increase axis title size
+      axis.line = element_line(size = 0.6),
+      axis.text.x = element_text(hjust = 1, angle = 90),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+     )
+  p1_legend<-get_legend(p)    
+  p1_legend<-as_ggplot(p1_legend)   
+  p1[[l]]<-p+theme(legend.position = "none")
+
+  #rm(tdf1,j,l,lipo_name, selected_vars)
+}
+
+library(gridExtra)
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures/Obesity"
+
+
+# svglite::svglite(filename = file.path(pathToPlot,"RadarPlotBusselton_Statin.svg"))
+ggarrange(p1[[1]], p1[[4]], p1[[3]], p1[[2]], nrow=4)
+# dev.off()
+# 
+# svglite::svglite(filename = file.path(pathToPlot,"RadarPlotBusseltonLegendv2.svg"))
+# plot(p1_legend)
+# dev.off()
+
+library(cowplot)
+
+# Extract the legend from one indiv plot
+p1_legend <- get_legend(p)  
+
+# Remove the title and legend from individual plots
+p1_no_title <- lapply(p1, function(p) p + theme(legend.position = "none", plot.title = element_blank()))
+
+# Arrange the plots with the legend to the right
+final_plot <- grid.arrange(
+  ggarrange(plotlist = p1_no_title, nrow = 4),  # Subplots without titles and legends
+  p1_legend,  # Common legend on the right
+  ncol = 2,  # Use 2 columns: one for plots and one for the legend
+  widths = c(3, 0.5)  # Adjust the relative width of the plot and legend
+)
+
+annotate_figure(final_plot, top = text_grob("Busselton_NO_Statin", color = "black", face = "bold", size = 15))
+
+svglite::svglite(filename = file.path(pathToPlot,"RadarPlotBusselton_NDM_NoStatin.svg"))
+final_plot <- grid.arrange(
+  ggarrange(plotlist = p1_no_title, nrow = 4),  # Subplots without titles and legends
+  p1_legend,  # Common legend on the right
+  ncol = 2,  # Use 2 columns: one for plots and one for the legend
+  widths = c(3, 0.5)  # Adjust the relative width of the plot and legend
+)
+dev.off()
+#rm(tdf, p, p1_legend, p1, p1_no_title, final_plot)
+
+```
+
+
+# Line chart -  Saudi
+NOTE: Waiting for Statin/Medication details from Sam (NM 29/10/2024)
+So Line chart for Saudi is only for NDM and includes statin & no statin 
+```{r, fig.width=20, fig.height=15}
+library(GGally)
+library(ggpubr)
+
+#lipo_name<-c("CH","TG","PL","PN","FC","A1|A2|AB")
+lipo_name<-c("CH","FC","PL", "TG")
+tdf <- Dia_Lipo
+#relocate VLCH and IDCH before LDCH to be consistent with TG, PL and FC. 
+tdf <- tdf %>%
+  relocate(c("VLCH", "IDCH"), .before = "LDCH") 
+tdf <- tdf %>% select(-c(TPCH, TPTG)) # if decided not to use TPCH and TPTG
+tdf$BMI_cat<- factor(Dia_Anno$BMI_cat, levels = c("Healthy", "OverWeight", "Obese"))
+tdf$DM <- Dia_Anno$DM
+tdf <- tdf %>% mutate(BMI_cat = recode(BMI_cat, Healthy = "<25", OverWeight = "25-30", Obese = ">30"))
+
+p1 <- list()
+# Loop over each lipid class in lipo_name
+for (l in lipo_name) {
+  # If the current class is "A1|A2|AB", use grep to match the specific pattern
+  if (l == "A1|A2|AB") {
+    selected_vars <- grep("A1|A2|AB", colnames(tdf), value = TRUE)
+  } else {
+    # Otherwise, use contains to match the general classes (e.g., "CH", "TG", etc.)
+    selected_vars <- grep(l, colnames(tdf), value = TRUE)
+  }
+
+    # Filter the data for 'Healthy' BMI_cat and select the appropriate columns
+    tdf1 <- data.frame(
+    Group1 = apply(na.omit(
+      tdf %>%
+        dplyr::filter(BMI_cat == "<25" & DM == "NDM") %>%
+        select(all_of(selected_vars))
+    ), 2, median),
+    Group2 = apply(na.omit(
+        tdf %>% 
+          dplyr::filter(BMI_cat == "25-30" & DM == "NDM") %>% 
+          select(all_of(selected_vars))
+      ), 2, median),
+    Group3 = apply(na.omit(
+       tdf %>% 
+         dplyr::filter(BMI_cat == ">30" & DM == "NDM") %>% 
+         select(all_of(selected_vars))
+      ), 2, median)
+    )
+  
+  # re-scale # if using this, make sure to set ggparcoord scale = "globalminmax" so not to double scale
+  for (j in 1:nrow(tdf1)) {
+    tdf1[j, ] <- tdf1[j, ] / max(tdf1[j, ])
+  }
+    
+  tdf1 <- data.frame(t(tdf1))
+ 
+  tdf1 <- tdf1 %>% tibble::rownames_to_column(var = "BMI")
+  
+  tdf1$BMI <- recode(tdf1[[1]], Group1 = "<25", Group2 = "25-30", Group3 = ">30")
+  
+  p<-ggparcoord(tdf1,
+    columns = 2:ncol(tdf1), groupColumn = 1, scale = "globalminmax",
+    showPoints = TRUE, 
+    alphaLines = 0.3
+    ) + xlab("") + ylab("") +
+    scale_color_manual(values = c("<25" = "#00BFC4", "25-30" = "#FFC425", ">30" = "#F8766D")) +  
+     geom_line(size=0.6) + theme(
+      axis.text = element_text(size = 14),           # Increase axis text size
+      axis.title = element_text(size = 20),          # Increase axis title size
+      axis.line = element_line(size = 0.6),
+      axis.text.x = element_text(hjust = 1, angle = 90),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+     )
+  p1_legend<-get_legend(p)    
+  p1_legend<-as_ggplot(p1_legend)   
+  p1[[l]]<-p+theme(legend.position = "none")
+
+  #rm(tdf1,j,l,lipo_name, selected_vars)
+}
+  
+
+library(gridExtra)
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures/Obesity/"
+          
+          
+#svglite::svglite(filename = file.path(pathToPlot,"RadarPlotSaudi.svg"))
+#ggarrange(p1[[1]], p1[[2]], p1[[3]], p1[[4]], nrow=4)
+#dev.off()
+
+# svglite::svglite(filename = file.path(pathToPlot,"RadarPlotSaudiLegendv2.svg"))
+# plot(p1_legend)
+# dev.off()
+
+
+library(cowplot)
+
+# Extract the legend from one indiv plot
+p1_legend <- get_legend(p)  
+
+# Remove the title and legend from individual plots
+p1_no_title <- lapply(p1, function(p) p + theme(legend.position = "none", plot.title = element_blank()))
+
+# Arrange the plots with the legend to the right
+final_plot <- grid.arrange(
+  ggarrange(plotlist = p1_no_title, nrow = 4),  # Subplots without titles and legends
+  p1_legend,  # Common legend on the right
+  ncol = 2,  # Use 2 columns: one for plots and one for the legend
+  widths = c(3, 0.5)  # Adjust the relative width of the plot and legend
+)
+
+
+annotate_figure(final_plot, top = text_grob("Saudi", color = "black", face = "bold", size = 15))
+
+svglite::svglite(filename = file.path(pathToPlot,"RadarPlotSaudi_NDM.svg"))
+final_plot <- grid.arrange(
+  ggarrange(plotlist = p1_no_title, nrow = 4),  # Subplots without titles and legends
+  p1_legend,  # Common legend on the right
+  ncol = 2,  # Use 2 columns: one for plots and one for the legend
+  widths = c(3, 0.5)  # Adjust the relative width of the plot and legend
+)
+
+dev.off()
+
+rm(tdf, p, p1_legend, p1, p1_no_title, final_plot)
+```
+
+
+Data prep
+```{r}
+tdf1 <- BHA_Lipo
+tdf1$BMI_cat<- BHA_Anno$BMI_cat 
+tdf1$BMI_cat <- factor(tdf1$BMI_cat, levels = c("Healthy", "OverWeight", "Obese"))
+tdf1$DM <- BHA_Anno$DM
+tdf1$cohort <- BHA_Anno$cohort
+
+tdf2 <- Dia_Lipo
+tdf2$BMI_cat<- Dia_Anno$BMI_cat
+tdf2$BMI_cat <- factor(tdf2$BMI_cat, levels = c("Healthy", "OverWeight", "Obese"))
+tdf2$DM <- Dia_Anno$DM
+tdf2$cohort <- Dia_Anno$cohort
+tdf2$cohort[which(tdf2$cohort == "DiaObesity")] = "Saudi"
+
+tdf <- rbind(tdf1, tdf2)
+tdf <- tdf %>% mutate(BMI_cat = recode(BMI_cat, Healthy = "<25", OverWeight = "25-30", Obese = ">30"))
+
+tdf$normV1PL <- tdf$V1PL/tdf$VLPL
+tdf$normV2PL <- tdf$V2PL/tdf$VLPL
+tdf$normV3PL <- tdf$V3PL/tdf$VLPL
+tdf$normV4PL <- tdf$V4PL/tdf$VLPL
+tdf$normV5PL <- tdf$V5PL/tdf$VLPL
+
+
+tdf$normL1PN <- tdf$L1PN/tdf$LDPN
+tdf$normL2PN <- tdf$L2PN/tdf$LDPN
+tdf$normL3PN <- tdf$L3PN/tdf$LDPN
+tdf$normL4PN <- tdf$L4PN/tdf$LDPN
+tdf$normL5PN <- tdf$L5PN/tdf$LDPN
+tdf$normL6PN <- tdf$L6PN/tdf$LDPN
+
+```
+
+# Fig3. BUS Bar Charts - All - NDM
+## Busselton - NDM - ALL
+```{r}
+summarised_data <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+    summarise(med_LDPN = median(LDPN, na.rm = TRUE), med_VLPL = median(VLPL, na.rm=TRUE), 
+            med_IDPN = median(IDPN, na.rm = TRUE), med_HDA1 = median(HDA1, na.rm = TRUE), 
+            med_HDPL = median(HDPL, na.rm = TRUE), total_VLPL = sum(VLPL, na.rm = TRUE), 
+            total_LDPN = sum(LDPN, na.rm = TRUE), sample_size = n())  # Median VDPL, IDPN, LDPN, HDA1, HDPL and total LDPN for each category
+
+# Set the order of BMI_cat factor levels
+summarised_data$BMI_cat <- factor(summarised_data$BMI_cat, 
+                             levels = c("<25", ">30"))
+
+#write.csv(summarised_data, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/Bus_PN_NDM_all.csv", row.names = F)
+
+```
+
+#### a.VLPL
+```{r}
+# Create the bar chart for VLPL
+a <-ggplot(summarised_data, aes(x = BMI_cat, y = med_VLPL)) +
+  geom_bar(stat = "identity", fill = "steelblue2") +
+  labs(x = "", y = "VLPL") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      strip.text = element_text(size = 10),
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsBus_VLPL_NDM_All.svg"))
+# a
+# dev.off()
+
+```
+
+#### b.V1PL to V5PL
+```{r}
+#Calculate total for each VLDL PL and sample size within each category
+sample_counts <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(across(starts_with("norm") & ends_with("PL"), median, na.rm = TRUE), 
+            sample_size = n())  # Count samples in each category
+
+# renaming the normalisedPN columns for graphing purpose later
+colnames(sample_counts) [2] <- "V1PL"
+colnames(sample_counts) [3] <- "V2PL"
+colnames(sample_counts) [4] <- "V3PL"
+colnames(sample_counts) [5] <- "V4PL"
+colnames(sample_counts) [6] <- "V5PL"
+
+
+#write.csv(sample_counts, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/Bus_normV1_V5PL_NDM_all.csv", row.names = F)
+
+# Reshape data to long format
+long_data <- sample_counts %>%
+  pivot_longer(cols = starts_with("V"), 
+               names_to = "Variable", 
+               values_to = "Median") 
+
+# Set the order of BMI factor levels
+long_data$BMI_cat <- factor(long_data$BMI_cat,
+                          levels = c("<25", ">30"))
+```
+
+```{r}
+# Create the bar chart for V1PL-V5PL
+b <- ggplot(long_data, aes(x = BMI_cat, y = Median, fill = Variable)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  labs(x = "", y = "PL", fill = "") + 
+  scale_y_continuous(labels = scales::number_format(accuracy = 0.01), limits = c(0, 0.35)) +  # Adjust the limits here to be slightly above the max value
+  scale_fill_manual(values = c("V1PL" = "lightblue1", "V2PL" = "lightskyblue1", "V3PL"= "lightskyblue", "V4PL" = "skyblue2", "V5PL" = "skyblue3")) + 
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    axis.line = element_line(size = 0.3),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsBus_normV1_5PL_NDM_all.svg"))
+# b
+# dev.off()
+```
+
+
+
+### c.IDPN
+```{r}
+# Create the bar chart for IDPN
+c<-ggplot(summarised_data, aes(x = BMI_cat, y = med_IDPN)) +
+  geom_bar(stat = "identity", fill = "steelblue3") +
+  labs(x = "", y = "IDPN") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsBus_IDPN_NDM_all.svg"))
+# c
+# dev.off()
+```
+
+### d.LDPN 
+```{r}
+# Create the bar chart for LDPN
+d<-ggplot(summarised_data, aes(x = BMI_cat, y = med_LDPN)) +
+  geom_bar(stat = "identity", fill = "dodgerblue2") +
+  labs(x = "", y = "LDPN") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsBus_LDPN_NDM_all.svg"))
+# d
+# dev.off()
+```
+
+
+### e.L1PN to L6PN
+```{r}
+#Calculate total for each LDL PN and sample size within each category
+sample_counts <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(across(starts_with("norm") & ends_with("PN"), median, na.rm = TRUE), 
+            sample_size = n())  # Count samples in each category
+
+# renaming the normalisedPN columns for graphing purpose later
+colnames(sample_counts) [2] <- "L1PN"
+colnames(sample_counts) [3] <- "L2PN"
+colnames(sample_counts) [4] <- "L3PN"
+colnames(sample_counts) [5] <- "L4PN"
+colnames(sample_counts) [6] <- "L5PN"
+colnames(sample_counts) [7] <- "L6PN"
+
+#write.csv(sample_counts, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/Bus_normL1_L6PN_NDM_all.csv", row.names = F)
+
+# Reshape data to long format
+long_data <- sample_counts %>%
+  pivot_longer(cols = starts_with("L"), 
+               names_to = "Variable", 
+               values_to = "Median") 
+
+```
+
+
+```{r}
+# Create the bar chart for the normalised PN to LDPN
+e <- ggplot(long_data, aes(x = BMI_cat, y = Median, fill = Variable)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  labs(x = "", y = "PN", fill = "") + 
+  scale_y_continuous(labels = scales::number_format(accuracy = 0.01), 
+                     limits = c(0, 0.35)) +  # Adjust the limits here to be slightly above the max value
+  scale_fill_manual(values = c("L1PN" = "lightblue1", "L2PN" = "lightskyblue1", "L3PN"= "lightskyblue", "L4PN" = "skyblue2", "L5PN" = "skyblue3", "L6PN" = "skyblue4")) + 
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    axis.line = element_line(size = 0.3),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsBus_normL1_6_NDM_all.svg"))
+# e
+# dev.off()
+```
+
+
+### f. HDA1 - A1 substitute for PN for HDL
+```{r}
+# Create the bar chart for HDA1
+f<-ggplot(summarised_data, aes(x = BMI_cat, y = med_HDA1)) +
+  geom_bar(stat = "identity", fill = "skyblue3") +
+  labs(x = "", y = "HDA1") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsBus_HDA1_NDM_all.svg"))
+# f
+# dev.off()
+```
+
+
+### g.H1A1 to H4A1
+```{r}
+#Calculate total for each LDL PN and sample size within each category
+sample_counts <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(across(starts_with("H") & ends_with("A1"), median, na.rm = TRUE), 
+            sample_size = n())  # Count samples in each category
+
+# Select only H1A1 to H4A1
+sample_counts <- sample_counts %>%
+  select(BMI_cat, H1A1, H2A1, H3A1, H4A1, sample_size)
+
+# Reshape data to long format
+long_data <- sample_counts %>%
+  pivot_longer(cols = starts_with("H"), 
+               names_to = "Variable", 
+               values_to = "Median") 
+
+# Create the bar chart
+g<-ggplot(long_data, aes(x = BMI_cat, y = Median, fill = Variable)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "", y = "A1", fill = "") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +
+  scale_fill_manual(values = c("H1A1" = "lightblue1", "H2A1" = "lightskyblue", "H3A1"= "skyblue2", "H4A1" = "skyblue4")) + # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    ) 
+
+# svglite::svglite(filename = file.path(pathToPlot,"PN_BarChartsBus_H1_4A1_NDM_all.svg"))
+# g
+# dev.off()
+```
+
+
+### h. MAU - UC - LDL spectra (from Philipp)
+Importing Philipp's Mauritius's UC Spectra
+```{r}
+library(png)
+
+img_path <- "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures/Obesity/Mau_UC_LDL_all.png"  
+img <- readPNG(img_path)
+img_raster <- rasterGrob(img, interpolate = TRUE)
+
+h <- ggplot() +
+  annotation_custom(img_raster, xmin = 0,xmax = 1, ymin = 0, ymax = 1) +
+  theme_void()
+
+
+```
+
+
+```{r}
+#no UC spectra
+busplot <- ggarrange(a,b,c,d,e,f,g, nrow = 4,ncol=2)
+
+busplot
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarCharts_PN_Busselton_NDM_all.svg"))
+# busplot
+# dev.off()
+
+# with UC spectra
+busplot2 <- ggarrange(a, b, c, h, d, e, f, g,
+                     nrow = 4, ncol = 2)  
+
+busplot2
+
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarCharts_PN_UC_Busselton_NDM_all.svg"))
+# busplot2
+# dev.off()
+
+
+rm(a,b,c,d,e,f,g,h,img,ig_raster,long_data, sample_counts, summarised_data,busplot)
+```
+
+
+#### PN Sig test 
+Wilcoxon - more appropriate as there's only 2 grps to compare (<25 vs. >30)
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Initialize a list to store the results
+result_list <- list()
+
+# Get unique variable names for relevant columns
+variable_names <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & BMI_cat %in% c("<25", ">30") & DM == "NDM") %>%
+  pivot_longer(cols = matches("(A1|PN|PL)$"), names_to = "variable", values_to = "value") %>%
+  pull(variable) %>% unique()
+
+# Loop through each variable to perform Wilcoxon test
+for (var in variable_names) {
+  # Filter data for the current variable
+  current_data <- tdf %>%
+    dplyr::filter(cohort == "Busselton" & BMI_cat %in% c("<25", ">30") & DM == "NDM") %>%
+    select(BMI_cat, !!sym(var)) %>%
+    rename(value = !!sym(var))
+  
+  # Perform Mann-Whitney U test (Wilcoxon rank-sum test for   independent samples)
+  mann_whitney_result <- wilcox.test(value ~ BMI_cat, data = current_data, exact = FALSE)
+
+  # Create a result entry
+  result_entry <- data.frame(
+  variable = var,
+  mann_whitney_pval = mann_whitney_result$p.value,
+  statistic = mann_whitney_result$statistic
+  )
+
+  # Append the result entry to the result list
+  result_list[[var]] <- result_entry
+}
+
+# Combine all results into a single data frame
+final_results <- bind_rows(result_list)
+
+# Adjust the p-values for multiple comparisons
+final_results <- final_results %>%
+  mutate(p_adjusted = p.adjust(mann_whitney_pval, method = "bonferroni"))  # or "BH" for Benjamini-Hochberg if have larger sets of test
+
+# View the tidy results
+print(final_results)
+
+#Export to CSV
+#write.csv(final_results, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/Bus_PN_Mann-Whitney_NDM_all.csv", row.names = FALSE)
+```
+
+
+splitting statin vs no statin in Busselton 
+## BUS - Statin
+```{r}
+summarised_data <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & statin == 1 & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(med_LDPN = median(LDPN, na.rm = TRUE), med_VLPL = median(VLPL, na.rm=TRUE), 
+            med_IDPN = median(IDPN, na.rm = TRUE), med_HDA1 = median(HDA1, na.rm = TRUE), 
+            med_HDPL = median(HDPL, na.rm = TRUE), total_VLPL = sum(VLPL, na.rm = TRUE), 
+            total_LDPN = sum(LDPN, na.rm = TRUE), sample_size = n())  # Median VDPL, IDPN, LDPN, HDA1, HDPL and total LDPN for each category
+
+# Set the order of BMI_cat factor levels
+summarised_data$BMI_cat <- factor(summarised_data$BMI_cat, 
+                             levels = c("<25", ">30"))
+
+
+
+#write.csv(summarised_data, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/PN_Obesity_NDM_Statin.csv", row.names = F)
+
+```
+
+#### a.VLPL
+```{r}
+# Create the bar chart for VLPL
+a <-ggplot(summarised_data, aes(x = BMI_cat, y = med_VLPL)) +
+  geom_bar(stat = "identity", fill = "steelblue2") +
+  labs(x = "", y = "VLPL") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      # axis.text.y = element_blank(),
+      # axis.ticks.y = element_blank(),
+      # axis.text.x = element_blank(),
+      # axis.ticks.x = element_blank(),
+      strip.text = element_text(size = 10),
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures/Obesity"
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsBus_VLPL_NDM_Statin.svg"))
+# a
+# dev.off()
+
+```
+
+#### b.V1PL to V5PL
+```{r}
+#Calculate total for each VLDL PL and sample size within each category
+sample_counts <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & statin == 1 & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(across(starts_with("norm") & ends_with("PL"), median, na.rm = TRUE), 
+            sample_size = n())  # Count samples in each category
+
+# renaming the normalisedPN columns for graphing purpose later
+colnames(sample_counts) [2] <- "V1PL"
+colnames(sample_counts) [3] <- "V2PL"
+colnames(sample_counts) [4] <- "V3PL"
+colnames(sample_counts) [5] <- "V4PL"
+colnames(sample_counts) [6] <- "V5PL"
+
+
+# write.csv(sample_counts, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/normV1_V5PL_NDM_Statin.csv", row.names = F)
+
+# Reshape data to long format
+long_data <- sample_counts %>%
+  pivot_longer(cols = starts_with("V"), 
+               names_to = "Variable", 
+               values_to = "Median") 
+
+# Set the order of BMI factor levels
+long_data$BMI_cat <- factor(long_data$BMI_cat,
+                          levels = c("<25", ">30"))
+```
+
+
+```{r}
+# Create the bar chart for V1PL-V5PL
+b <- ggplot(long_data, aes(x = BMI_cat, y = Median, fill = Variable)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  labs(x = "", y = "PL", fill = "") + 
+  scale_y_continuous(labels = scales::number_format(accuracy = 0.01), 
+                     limits = c(0, 0.35)) +  # Adjust the limits here to be slightly above the max value
+  scale_fill_manual(values = c("V1PL" = "lightblue1", "V2PL" = "lightskyblue1", "V3PL"= "lightskyblue", "V4PL" = "skyblue2", "V5PL" = "skyblue3")) + 
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    axis.line = element_line(size = 0.3),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+# svglite::svglite(filename = file.path(pathToPlot,"VLPL_BarChartsBus_normV1_5_NDM_Statin.svg"))
+# b
+# dev.off()
+```
+
+
+#### c.IDPN
+```{r}
+# Create the bar chart for IDPN
+c<-ggplot(summarised_data, aes(x = BMI_cat, y = med_IDPN)) +
+  geom_bar(stat = "identity", fill = "steelblue3") +
+  labs(x = "", y = "IDPN") +
+  coord_cartesian(ylim = c(0, 100)) +  # Set y-axis limits without dropping data
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsBus_IDPN_NDM_Statin.svg"))
+# c
+# dev.off()
+```
+
+
+#### d.LDPN 
+```{r}
+# Create the bar chart for LDPN
+d<-ggplot(summarised_data, aes(x =BMI_cat, y = med_LDPN)) +
+  geom_bar(stat = "identity", fill = "dodgerblue2") +
+  labs(x = "", y = "LDPN") +
+  coord_cartesian(ylim = c(0, 1500)) +  # Set y-axis limits without dropping data
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+svglite::svglite(filename = file.path(pathToPlot,"BarChartsBus_LDPN_NDM_Statin.svg"))
+d
+dev.off()
+```
+
+
+#### e.L1PN to L6PN
+```{r}
+#Calculate total for each LDL PN and sample size within each category
+sample_counts <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & statin == 1 & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(across(starts_with("norm") & ends_with("PN"), median, na.rm = TRUE), 
+            sample_size = n())  # Count samples in each category
+
+# renaming the normalisedPN columns for graphing purpose later
+colnames(sample_counts) [2] <- "L1PN"
+colnames(sample_counts) [3] <- "L2PN"
+colnames(sample_counts) [4] <- "L3PN"
+colnames(sample_counts) [5] <- "L4PN"
+colnames(sample_counts) [6] <- "L5PN"
+colnames(sample_counts) [7] <- "L6PN"
+
+#write.csv(sample_counts, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/normL1_L6PN_NDM_Statin.csv", row.names = F)
+
+# Reshape data to long format
+long_data <- sample_counts %>%
+  pivot_longer(cols = starts_with("L"), 
+               names_to = "Variable", 
+               values_to = "Median") 
+
+# Set the order of BMI factor levels
+long_data$BMI_cat <- factor(long_data$BMI_cat, 
+                          levels = c("<25", ">30"))
+
+```
+
+```{r}
+# Create the bar chart for the normalised PN to LDPN
+e <- ggplot(long_data, aes(x = BMI_cat, y = Median, fill = Variable)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  labs(x = "", y = "PN", fill = "") + 
+  scale_y_continuous(labels = scales::number_format(accuracy = 0.01), 
+                     limits = c(0, 0.35)) +  # Adjust the limits here to be slightly above the max value
+  scale_fill_manual(values = c("L1PN" = "lightblue1", "L2PN" = "lightskyblue1", "L3PN"= "lightskyblue", "L4PN" = "skyblue2", "L5PN" = "skyblue3", "L6PN" = "skyblue4")) + 
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    axis.line = element_line(size = 0.3),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsBus_normL1_6_NDM_Statin.svg"))
+# e
+# dev.off()
+```
+
+#### f.HDA1
+```{r}
+# Create the bar chart for HDA1
+f<-ggplot(summarised_data, aes(x = BMI_cat, y = med_HDA1)) +
+  geom_bar(stat = "identity", fill = "skyblue3") +
+  labs(x = "", y = "HDA1") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsBus_HDA1_NDM_Statin.svg"))
+# f
+# dev.off()
+```
+
+
+#### g.H1A1 to H4A1 
+```{r}
+#Calculate total for each LDL PN and sample size within each category
+sample_counts <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & statin == 1 & DM == "NDM", BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(across(starts_with("H") & ends_with("A1"), median, na.rm = TRUE), 
+            sample_size = n())  # Count samples in each category
+
+# Select only H1A1 to H4A1
+sample_counts <- sample_counts %>%
+  select(BMI_cat, H1A1, H2A1, H3A1, H4A1, sample_size)
+
+# Reshape data to long format
+long_data <- sample_counts %>%
+  pivot_longer(cols = starts_with("H"), 
+               names_to = "Variable", 
+               values_to = "Median") 
+
+# Set the order of comb factor levels
+long_data$BMI_cat <- factor(long_data$BMI_cat, 
+                          levels = c("<25", ">30"))
+
+# Create the bar chart
+g<-ggplot(long_data, aes(x = BMI_cat, y = Median, fill = Variable)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "", y = "A1", fill = "") +
+  coord_cartesian(ylim = c(0, 80)) +  # Set y-axis limits without dropping data
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +
+  scale_fill_manual(values = c("H1A1" = "lightblue1", "H2A1" = "lightskyblue", "H3A1"= "skyblue2", "H4A1" = "skyblue4")) + # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    ) 
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsBus_H1_4_NDM_Statin.svg"))
+# g
+# dev.off()
+```
+
+
+```{r}
+busplotStatin <- ggarrange(a,b,c,d,e,f,g, nrow = 4,ncol=2)
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures/Obesity"
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarCharts_PN_Busselton_Obesity_NDM_Statin.svg"))
+# busplotStatin
+# dev.off()
+
+
+#rm(a,b,c,d,long_data, sample_counts, summarised_data)
+```
+
+
+#### BUS - PN Sig test -  NDM & Taking Statin
+Wilcoxon - more appropriate as there's only 2 grps to compare (<25 vs. >30)
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Initialize a list to store the results
+result_list <- list()
+
+# Get unique variable names for relevant columns
+variable_names <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & BMI_cat %in% c("<25", ">30") & DM == "NDM" & statin == 1) %>%
+  pivot_longer(cols = matches("(A1|PN|PL)$"), names_to = "variable", values_to = "value") %>%
+  pull(variable) %>% unique()
+
+# Loop through each variable to perform Wilcoxon test
+for (var in variable_names) {
+  # Filter data for the current variable
+  current_data <- tdf %>%
+    dplyr::filter(cohort == "Busselton" & BMI_cat %in% c("<25", ">30") & DM == "NDM" & statin == 1) %>%
+    select(BMI_cat, !!sym(var)) %>%
+    rename(value = !!sym(var))
+  
+  # Perform Wilcoxon rank-sum test
+  wilcox_test_result <- wilcox.test(value ~ BMI_cat, data = current_data, exact = FALSE)
+  
+  # Create a result entry
+  result_entry <- data.frame(
+    variable = var,
+    wilcox_pval = wilcox_test_result$p.value,
+    statistic = wilcox_test_result$statistic
+  )
+  
+  # Append the result entry to the result list
+  result_list[[var]] <- result_entry
+}
+
+# Combine all results into a single data frame
+final_results <- bind_rows(result_list)
+
+# Adjust the p-values for multiple comparisons
+final_results <- final_results %>%
+  mutate(p_adjusted = p.adjust(wilcox_pval, method = "bonferroni"))  # or "BH" for Benjamini-Hochberg
+
+# View the tidy results
+print(final_results)
+
+```
+
+
+
+Kruskal-Wallis
+```{r, eval=FALSE}
+library(FSA) # For Dunn's test
+library(purrr)  # For map functions
+
+# Initialize a list to store the results
+result_list <- list()
+
+# Perform analysis for each variable
+variable_names <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & BMI_cat %in% c("<25", ">30") & DM == "NDM" & statin == 1) %>%
+  pivot_longer(cols = matches("(A1|PN|PL)$"), names_to = "variable", values_to = "value") %>%
+  pull(variable) %>% unique()  # Get unique variable names
+
+# Loop through each variable to perform Kruskal-Wallis and Dunn's test
+for (var in variable_names) {
+  # Filter data for the current variable
+  current_data <- tdf %>%
+    dplyr::filter(cohort == "Busselton" & BMI_cat %in% c("<25", ">30") & DM == "NDM" & statin == 1) %>%
+    select(BMI_cat, !!sym(var)) %>%
+    rename(value = !!sym(var))
+  
+  # Perform Kruskal-Wallis test
+  kruskal_test_result <- kruskal.test(value ~ BMI_cat, data = current_data)
+  
+  # Create a result entry
+  result_entry <- data.frame(variable = var, kruskal_pval = kruskal_test_result$p.value)
+  
+  # If significant, perform Dunn's test
+  if (kruskal_test_result$p.value < 0.05) {
+    dunn_result <- dunnTest(value ~ BMI_cat, data = current_data, method = "bonferroni")$res
+    dunn_result <- dunn_result %>% as.data.frame()  # Convert Dunn's result to data frame
+    
+    # Add the dunn results to the entry
+    result_entry <- bind_cols(result_entry, dunn_result)
+  } else {
+    # If not significant, fill with NA
+    result_entry$Comparison <- NA
+    result_entry$Z <- NA
+    result_entry$P.unadj <- NA
+    result_entry$P.adj <- NA
+  }
+  
+  # Append the result entry to the result list
+  result_list[[var]] <- result_entry
+}
+
+# Combine all results into a single data frame
+final_results <- bind_rows(result_list)
+
+# View the tidy results
+print(final_results)
+
+#Export to CSV
+#write.csv(final_results, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/Bus_PN_kruskal_dunn_results_NDM_NoStatin.csv", row.names = FALSE)
+```
+
+
+
+## BUS - Not taking Statin
+```{r}
+summarised_data <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & statin == 0 & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(med_LDPN = median(LDPN, na.rm = TRUE), med_VLPL = median(VLPL, na.rm=TRUE), 
+            med_IDPN = median(IDPN, na.rm = TRUE), med_HDA1 = median(HDA1, na.rm = TRUE), 
+            med_HDPL = median(HDPL, na.rm = TRUE), total_VLPL = sum(VLPL, na.rm = TRUE), 
+            total_LDPN = sum(LDPN, na.rm = TRUE), sample_size = n())  # Median VDPN, IDPN, LDPN, HDA1, HDPL and total LDPN for each category
+
+# Set the order of comb factor levels
+summarised_data$BMI_cat <- factor(summarised_data$BMI_cat, 
+                             levels = c("<25", ">30"))
+
+#write.csv(summarised_data, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/PN_Obesity_NDM_NoStatin.csv", row.names = F)
+
+```
+
+#### a.VLPL
+```{r}
+# Create the bar chart for VLPN
+a <-ggplot(summarised_data, aes(x = BMI_cat, y = med_VLPL)) +
+  geom_bar(stat = "identity", fill = "steelblue2") +
+  labs(x = "", y = "VLPL") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      # axis.text.y = element_blank(),
+      # axis.ticks.y = element_blank(),
+      # axis.text.x = element_blank(),
+      # axis.ticks.x = element_blank(),
+      strip.text = element_text(size = 10),
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures/Obesity"
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsBus_VLPL_NDM_NoStatin.svg"))
+# a
+# dev.off()
+
+```
+
+#### b.V1PL to V5PL
+```{r}
+#Calculate total for each VLDL PL and sample size within each category
+sample_counts <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & statin == 0 & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(across(starts_with("norm") & ends_with("PL"), median, na.rm = TRUE), 
+            sample_size = n())  # Count samples in each category
+
+# renaming the normalisedPN columns for graphing purpose later
+colnames(sample_counts) [2] <- "V1PL"
+colnames(sample_counts) [3] <- "V2PL"
+colnames(sample_counts) [4] <- "V3PL"
+colnames(sample_counts) [5] <- "V4PL"
+colnames(sample_counts) [6] <- "V5PL"
+
+
+#write.csv(sample_counts, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/normV1_V5PL_NDM_NoStatin.csv", row.names = F)
+
+# Reshape data to long format
+long_data <- sample_counts %>%
+  pivot_longer(cols = starts_with("V"), 
+               names_to = "Variable", 
+               values_to = "Median") 
+
+# Set the order of BMI factor levels
+long_data$BMI_cat <- factor(long_data$BMI_cat,
+                          levels = c("<25", ">30"))
+```
+
+```{r}
+# Create the bar chart for the normalised PN to LDPN
+b <- ggplot(long_data, aes(x = BMI_cat, y = Median, fill = Variable)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  labs(x = "", y = "PL", fill = "") + 
+  scale_y_continuous(labels = scales::number_format(accuracy = 0.01), 
+                     limits = c(0, 0.35)) +  # Adjust the limits here to be slightly above the max value
+  scale_fill_manual(values = c("V1PL" = "lightblue1", "V2PL" = "lightskyblue1", "V3PL"= "lightskyblue", "V4PL" = "skyblue2", "V5PL" = "skyblue3")) + 
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    axis.line = element_line(size = 0.3),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+# svglite::svglite(filename = file.path(pathToPlot,"VLPL_BarChartsBus_normV1_5_NDM_NoStatin.svg"))
+# b
+# dev.off()
+```
+
+
+#### c.IDPN
+```{r}
+# Create the bar chart for IDPN
+c<-ggplot(summarised_data, aes(x = BMI_cat, y = med_IDPN)) +
+  geom_bar(stat = "identity", fill = "steelblue3") +
+  labs(x = "", y = "IDPN") +
+  coord_cartesian(ylim = c(0, 100)) +  # Set y-axis limits without dropping data
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+# svglite::svglite(filename = file.path(pathToPlot,"PN_BarChartsBus_IDPN_NDM_NoStatin.svg"))
+# c
+# dev.off()
+```
+
+
+#### d.LDPN 
+```{r}
+# Create the bar chart for LDPN
+d<-ggplot(summarised_data, aes(x =BMI_cat, y = med_LDPN)) +
+  geom_bar(stat = "identity", fill = "dodgerblue2") +
+  labs(x = "", y = "LDPN") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+# svglite::svglite(filename = file.path(pathToPlot,"PN_BarChartsBus_LDPN_NDM_NoStatin.svg"))
+# d
+# dev.off()
+```
+
+
+#### e.L1PN to L6PN
+```{r}
+#Calculate total for each LDL PN and sample size within each category
+sample_counts <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & statin == 0 & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(across(starts_with("norm") & ends_with("PN"), median, na.rm = TRUE), 
+            sample_size = n())  # Count samples in each category
+
+# renaming the normalisedPN columns for graphing purpose later
+colnames(sample_counts) [2] <- "L1PN"
+colnames(sample_counts) [3] <- "L2PN"
+colnames(sample_counts) [4] <- "L3PN"
+colnames(sample_counts) [5] <- "L4PN"
+colnames(sample_counts) [6] <- "L5PN"
+colnames(sample_counts) [7] <- "L6PN"
+
+#write.csv(sample_counts, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/normL1_L6PN_NDM_NoStatin.csv", row.names = F)
+
+# Reshape data to long format
+long_data <- sample_counts %>%
+  pivot_longer(cols = starts_with("L"), 
+               names_to = "Variable", 
+               values_to = "Median") 
+
+# Set the order of BMI factor levels
+long_data$BMI_cat <- factor(long_data$BMI_cat, 
+                          levels = c("<25", ">30"))
+
+```
+
+
+```{r}
+# Create the bar chart for the normalised PN to LDPN
+e <- ggplot(long_data, aes(x = BMI_cat, y = Median, fill = Variable)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  labs(x = "", y = "PN", fill = "") + 
+  scale_y_continuous(labels = scales::number_format(accuracy = 0.01), 
+                     limits = c(0, 0.35)) +  # Adjust the limits here to be slightly above the max value
+  scale_fill_manual(values = c("L1PN" = "lightblue1", "L2PN" = "lightskyblue1", "L3PN"= "lightskyblue", "L4PN" = "skyblue2", "L5PN" = "skyblue3", "L6PN" = "skyblue4")) + 
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    axis.line = element_line(size = 0.3),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+# svglite::svglite(filename = file.path(pathToPlot,"PN_BarChartsBus_normL1_6_NDM_NoStatin.svg"))
+# e
+# dev.off()
+```
+
+#### f.HDA1
+```{r}
+# Create the bar chart for HDA1
+f<-ggplot(summarised_data, aes(x = BMI_cat, y = med_HDA1)) +
+  geom_bar(stat = "identity", fill = "skyblue3") +
+  labs(x = "", y = "HDA1") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+# svglite::svglite(filename = file.path(pathToPlot,"PN_BarChartsBus_HDA1_NDM_NoStatin.svg"))
+# f
+# dev.off()
+```
+
+
+#### g.H1A1 to H4A1 
+```{r}
+#Calculate total for each LDL PN and sample size within each category
+sample_counts <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & statin == 0 & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(across(starts_with("H") & ends_with("A1"), median, na.rm = TRUE), 
+            sample_size = n())  # Count samples in each category
+
+# Select only H1A1 to H4A1
+sample_counts <- sample_counts %>%
+  select(BMI_cat, H1A1, H2A1, H3A1, H4A1, sample_size)
+
+# Reshape data to long format
+long_data <- sample_counts %>%
+  pivot_longer(cols = starts_with("H"), 
+               names_to = "Variable", 
+               values_to = "Median") 
+
+# Set the order of comb factor levels
+long_data$BMI_cat <- factor(long_data$BMI_cat, 
+                          levels = c("<25", ">30"))
+
+# Create the bar chart
+g<-ggplot(long_data, aes(x = BMI_cat, y = Median, fill = Variable)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "", y = "A1", fill = "") +
+  coord_cartesian(ylim = c(0, 80)) +  # Set y-axis limits without dropping data
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +
+  scale_fill_manual(values = c("H1A1" = "lightblue1", "H2A1" = "lightskyblue", "H3A1"= "skyblue2", "H4A1" = "skyblue4")) + # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    ) 
+
+# svglite::svglite(filename = file.path(pathToPlot,"PN_BarChartsBus_H1_4_NDM_NoStatin.svg"))
+# g
+# dev.off()
+```
+
+
+
+```{r}
+busplotNoStatin <- ggarrange(a,b,c,d,e,f,g, nrow = 4,ncol=2)
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures/Obesity"
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarCharts_PN_Busselton_Obesity_NDM_NoStatin.svg"))
+# busplotNoStatin
+# dev.off()
+
+
+#rm(a,b,c,d,long_data, sample_counts, summarised_data)
+```
+
+#### BUS - PN Sig test - NDM & Not taking Statin
+Wilcoxon - more appropriate as there's only 2 grps to compare (<25 vs. >30)
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Initialize a list to store the results
+result_list <- list()
+
+# Get unique variable names for relevant columns
+variable_names <- tdf %>%
+  dplyr::filter(cohort == "Busselton" & BMI_cat %in% c("<25", ">30") & DM == "NDM" & statin == 0) %>%
+  pivot_longer(cols = matches("(A1|PN|PL)$"), names_to = "variable", values_to = "value") %>%
+  pull(variable) %>% unique()
+
+# Loop through each variable to perform Wilcoxon test
+for (var in variable_names) {
+  # Filter data for the current variable
+  current_data <- tdf %>%
+    dplyr::filter(cohort == "Busselton" & BMI_cat %in% c("<25", ">30") & DM == "NDM" & statin == 0) %>%
+    select(BMI_cat, !!sym(var)) %>%
+    rename(value = !!sym(var))
+  
+  # Perform Wilcoxon rank-sum test
+  wilcox_test_result <- wilcox.test(value ~ BMI_cat, data = current_data, exact = FALSE)
+  
+  # Create a result entry
+  result_entry <- data.frame(
+    variable = var,
+    wilcox_pval = wilcox_test_result$p.value,
+    statistic = wilcox_test_result$statistic
+  )
+  
+  # Append the result entry to the result list
+  result_list[[var]] <- result_entry
+}
+
+# Combine all results into a single data frame
+final_results <- bind_rows(result_list)
+
+# Adjust the p-values for multiple comparisons
+final_results <- final_results %>%
+  mutate(p_adjusted = p.adjust(wilcox_pval, method = "bonferroni"))  # or "BH" for Benjamini-Hochberg
+
+# View the tidy results
+print(final_results)
+
+```
+
+
+## Saudi -- No statin split - only 1 ppl within NDM taking statin/metformin (31/10/2024)
+```{r}
+summarised_data <- tdf %>%
+  dplyr::filter(cohort == "Saudi" & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(med_LDPN = median(LDPN, na.rm = TRUE), med_VLPL = median(VLPL, na.rm=TRUE), 
+            med_IDPN = median(IDPN, na.rm = TRUE), med_HDA1 = median(HDA1, na.rm = TRUE), 
+            med_HDPL = median(HDPL, na.rm = TRUE), total_VLPL = sum(VLPL, na.rm = TRUE), 
+            total_LDPN = sum(LDPN, na.rm = TRUE), sample_size = n())  # Median VDPN, IDPN, LDPN, HDA1, HDPL and total LDPN for each category
+
+# Set the order of comb factor levels
+summarised_data$BMI_cat <- factor(summarised_data$BMI_cat, 
+                             levels = c("<25", ">30"))
+
+#write.csv(summarised_data, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/Sau_PN_NDM_all.csv", row.names = F)
+
+```
+
+#### a.VLPL
+```{r}
+# Create the bar chart for VLPN
+a <-ggplot(summarised_data, aes(x = BMI_cat, y = med_VLPL)) +
+  geom_bar(stat = "identity", fill = "steelblue2") +
+  labs(x = "", y = "VLPL") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      # axis.text.y = element_blank(),
+      # axis.ticks.y = element_blank(),
+      # axis.text.x = element_blank(),
+      # axis.ticks.x = element_blank(),
+      strip.text = element_text(size = 10),
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsSau_VLPL_NDM_All.svg"))
+# a
+# dev.off()
+
+```
+
+#### b.V1PL to V5PL
+```{r}
+#Calculate total for each VLDL PL and sample size within each category
+sample_counts <- tdf %>%
+  dplyr::filter(cohort == "Saudi" & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(across(starts_with("norm") & ends_with("PL"), median, na.rm = TRUE), 
+            sample_size = n())  # Count samples in each category
+
+# renaming the normalisedPN columns for graphing purpose later
+colnames(sample_counts) [2] <- "V1PL"
+colnames(sample_counts) [3] <- "V2PL"
+colnames(sample_counts) [4] <- "V3PL"
+colnames(sample_counts) [5] <- "V4PL"
+colnames(sample_counts) [6] <- "V5PL"
+
+
+#write.csv(sample_counts, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/Sau_normV1_V5PL_NDM_All.csv", row.names = F)
+
+# Reshape data to long format
+long_data <- sample_counts %>%
+  pivot_longer(cols = starts_with("V"), 
+               names_to = "Variable", 
+               values_to = "Median") 
+
+# Set the order of BMI factor levels
+long_data$BMI_cat <- factor(long_data$BMI_cat,
+                          levels = c("<25", ">30"))
+```
+
+
+```{r}
+# Create the bar chart for the normalised PN to LDPN
+b <- ggplot(long_data, aes(x = BMI_cat, y = Median, fill = Variable)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  labs(x = "", y = "PL", fill = "") + 
+  scale_y_continuous(labels = scales::number_format(accuracy = 0.01), 
+                     limits = c(0, 0.35)) +  # Adjust the limits here to be slightly above the max value
+  scale_fill_manual(values = c("V1PL" = "lightblue1", "V2PL" = "lightskyblue1", "V3PL"= "lightskyblue", "V4PL" = "skyblue2", "V5PL" = "skyblue3")) + 
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    axis.line = element_line(size = 0.3),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsSau_normV1_5PL_NDM_All.svg"))
+# b
+# dev.off()
+```
+
+
+#### c.IDPN
+```{r}
+# Create the bar chart for IDPN
+c<-ggplot(summarised_data, aes(x = BMI_cat, y = med_IDPN)) +
+  geom_bar(stat = "identity", fill = "steelblue3") +
+  labs(x = "", y = "IDPN") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsSau_IDPN_NDM_All.svg"))
+# c
+# dev.off()
+```
+
+
+#### d.LDPN 
+```{r}
+# Create the bar chart for LDPN
+d<-ggplot(summarised_data, aes(x =BMI_cat, y = med_LDPN)) +
+  geom_bar(stat = "identity", fill = "dodgerblue2") +
+  labs(x = "", y = "LDPN") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsSau_LDPN_NDM_All.svg"))
+# d
+# dev.off()
+```
+
+
+#### e.L1PN to L6PN
+```{r}
+#Calculate total for each LDL PN and sample size within each category
+sample_counts <- tdf %>%
+  dplyr::filter(cohort == "Saudi" & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(across(starts_with("norm") & ends_with("PN"), median, na.rm = TRUE), 
+            sample_size = n())  # Count samples in each category
+
+# renaming the normalisedPN columns for graphing purpose later
+colnames(sample_counts) [2] <- "L1PN"
+colnames(sample_counts) [3] <- "L2PN"
+colnames(sample_counts) [4] <- "L3PN"
+colnames(sample_counts) [5] <- "L4PN"
+colnames(sample_counts) [6] <- "L5PN"
+colnames(sample_counts) [7] <- "L6PN"
+
+#write.csv(sample_counts, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Obesity/Sau_normL1_L6PN_NDM_All.csv", row.names = F)
+
+# Reshape data to long format
+long_data <- sample_counts %>%
+  pivot_longer(cols = starts_with("L"), 
+               names_to = "Variable", 
+               values_to = "Median") 
+
+# Set the order of BMI factor levels
+long_data$BMI_cat <- factor(long_data$BMI_cat, 
+                          levels = c("<25", ">30"))
+
+```
+
+
+```{r}
+# Create the bar chart for the normalised PN to LDPN
+e <- ggplot(long_data, aes(x = BMI_cat, y = Median, fill = Variable)) + 
+  geom_bar(stat = "identity", position = "dodge") + 
+  labs(x = "", y = "PN", fill = "") + 
+  scale_y_continuous(labels = scales::number_format(accuracy = 0.01), 
+                     limits = c(0, 0.35)) +  # Adjust the limits here to be slightly above the max value
+  scale_fill_manual(values = c("L1PN" = "lightblue1", "L2PN" = "lightskyblue1", "L3PN"= "lightskyblue", "L4PN" = "skyblue2", "L5PN" = "skyblue3", "L6PN" = "skyblue4")) + 
+  theme(
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 12),
+    axis.line = element_line(size = 0.3),
+    panel.background = element_rect(fill = "white", color = NA),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsSau_normL1_6PN_NDM_All.svg"))
+# e
+# dev.off()
+```
+
+#### f.HDA1
+```{r}
+# Create the bar chart for HDA1
+f<-ggplot(summarised_data, aes(x = BMI_cat, y = med_HDA1)) +
+  geom_bar(stat = "identity", fill = "skyblue3") +
+  labs(x = "", y = "HDA1") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +  # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    )
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsSau_HDA1_NDM_All.svg"))
+# f
+# dev.off()
+```
+
+
+#### g.H1A1 to H4A1 
+```{r}
+#Calculate total for each LDL PN and sample size within each category
+sample_counts <- tdf %>%
+  dplyr::filter(cohort == "Saudi" & DM == "NDM" & BMI_cat %in% c("<25", ">30")) %>%
+  group_by(BMI_cat) %>%
+  summarise(across(starts_with("H") & ends_with("A1"), median, na.rm = TRUE), 
+            sample_size = n())  # Count samples in each category
+
+# Select only H1A1 to H4A1
+sample_counts <- sample_counts %>%
+  select(BMI_cat, H1A1, H2A1, H3A1, H4A1, sample_size)
+
+# Reshape data to long format
+long_data <- sample_counts %>%
+  pivot_longer(cols = starts_with("H"), 
+               names_to = "Variable", 
+               values_to = "Median") 
+
+# Set the order of comb factor levels
+long_data$BMI_cat <- factor(long_data$BMI_cat, 
+                          levels = c("<25", ">30"))
+
+# Create the bar chart
+g<-ggplot(long_data, aes(x = BMI_cat, y = Median, fill = Variable)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(x = "", y = "A1", fill = "") +
+  scale_y_continuous(labels = scales::number_format(accuracy = 1)) +
+  scale_fill_manual(values = c("H1A1" = "lightblue1", "H2A1" = "lightskyblue", "H3A1"= "skyblue2", "H4A1" = "skyblue4")) + # Format y-axis labels
+  theme(
+      axis.text = element_text(size = 12),           # Increase axis text size
+      axis.title = element_text(size = 12),          # Increase axis title size
+      axis.line = element_line(size = 0.3),
+      panel.background = element_rect(fill = "white", color = NA),  # Set background to white
+      panel.grid.major = element_blank(),            # Remove major grid lines
+      panel.grid.minor = element_blank()             # Remove minor grid lines
+    ) 
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarChartsSau_H1_4A1_NDM_All.svg"))
+# g
+# dev.off()
+```
+
+```{r}
+sauplot <- ggarrange(a,b,c,d,e,f,g, nrow = 4,ncol=2)
+
+# svglite::svglite(filename = file.path(pathToPlot,"BarCharts_PN_Saudi_Obesity_NDM_All.svg"))
+# sauplot
+# dev.off()
+
+
+#rm(a,b,c,d,e,f,g, saudrug, sauplot, long_data, sample_counts, summarised_data)
+```
+
+#### SAU - PN Sig test -  NDM & Taking Statin
+Wilcoxon - more appropriate as there's only 2 grps to compare (<25 vs. >30)
+```{r}
+library(dplyr)
+library(tidyr)
+
+# Initialize a list to store the results
+result_list <- list()
+
+# Get unique variable names for relevant columns
+variable_names <- tdf %>%
+  dplyr::filter(cohort == "DiaObesity" & BMI_cat %in% c("<25", ">30") & DM == "NDM") %>%
+  pivot_longer(cols = matches("(A1|PN|PL)$"), names_to = "variable", values_to = "value") %>%
+  pull(variable) %>% unique()
+
+# Loop through each variable to perform Wilcoxon test
+for (var in variable_names) {
+  # Filter data for the current variable
+  current_data <- tdf %>%
+    dplyr::filter(cohort == "DiaObesity" & BMI_cat %in% c("<25", ">30") & DM == "NDM") %>%
+    select(BMI_cat, !!sym(var)) %>%
+    rename(value = !!sym(var))
+  
+  # Perform Wilcoxon rank-sum test
+  wilcox_test_result <- wilcox.test(value ~ BMI_cat, data = current_data, exact = FALSE)
+  
+  # Create a result entry
+  result_entry <- data.frame(
+    variable = var,
+    wilcox_pval = wilcox_test_result$p.value,
+    statistic = wilcox_test_result$statistic
+  )
+  
+  # Append the result entry to the result list
+  result_list[[var]] <- result_entry
+}
+
+# Combine all results into a single data frame
+final_results <- bind_rows(result_list)
+
+# Adjust the p-values for multiple comparisons
+final_results <- final_results %>%
+  mutate(p_adjusted = p.adjust(wilcox_pval, method = "bonferroni"))  # or "BH" for Benjamini-Hochberg
+
+# View the tidy results
+print(final_results)
+
+# Export to CSV
+#write.csv(final_results, "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Sau_PN_Wilcox_results.csv", row.names = FALSE)
+
+```
+
+
+
+
+# Fig4.Indiv Lipo composition 
+Calculating Lipo composition per each sub-fraction based on ratio, particle number explanation (Philipp) 
+
+## Busselton
+```{r}
+# tdf = existing dataframe from making Fig3 up above
+
+# Extract CE from total CH
+tdf$L1CE <- tdf$L1CH - tdf$L1FC
+tdf$L2CE <- tdf$L2CH - tdf$L2FC
+tdf$L3CE <- tdf$L3CH - tdf$L3FC
+tdf$L4CE <- tdf$L4CH - tdf$L4FC
+tdf$L5CE <- tdf$L5CH - tdf$L5FC
+tdf$L6CE <- tdf$L6CH - tdf$L6FC
+
+# Extract CE from total CH
+tdf$H1CE <- tdf$H1CH - tdf$H1FC
+tdf$H2CE <- tdf$H2CH - tdf$H2FC
+tdf$H3CE <- tdf$H3CH - tdf$H3FC
+tdf$H4CE <- tdf$H4CH - tdf$H4FC
+
+# Calculate total lipid for each level
+tdf$L1TotLip <- rowSums(tdf[, c("L1TG", "L1FC", "L1CE", "L1PL")])
+tdf$L2TotLip <- rowSums(tdf[, c("L2TG", "L2FC", "L2CE", "L2PL")])
+tdf$L3TotLip <- rowSums(tdf[, c("L3TG", "L3FC", "L3CE", "L3PL")])
+tdf$L4TotLip <- rowSums(tdf[, c("L4TG", "L4FC", "L4CE", "L4PL")])
+tdf$L5TotLip <- rowSums(tdf[, c("L5TG", "L5FC", "L5CE", "L5PL")])
+tdf$L6TotLip <- rowSums(tdf[, c("L6TG", "L6FC", "L6CE", "L6PL")])
+
+tdf$H1TotLip <- rowSums(tdf[, c("H1TG", "H1FC", "H1CE", "H1PL")])
+tdf$H2TotLip <- rowSums(tdf[, c("H2TG", "H2FC", "H2CE", "H2PL")])
+tdf$H3TotLip <- rowSums(tdf[, c("H3TG", "H3FC", "H3CE", "H3PL")])
+tdf$H4TotLip <- rowSums(tdf[, c("H4TG", "H4FC", "H4CE", "H4PL")])
+
+# Calculate percentages for each lipid component at each level, Do CH not CE as you use CH and FC to make CE
+lipos <- c("TG", "FC", "CE", "PL")
+
+# Loop through levels for 'LDL' 
+for (level in 1:6) {
+  # Loop through each lipid
+  for (lipo in lipos) {
+    # Construct the column names for the LDLs
+    column_name <- paste0("L", level, lipo, "%")
+    total_column_name <- paste0("L", level, "TotLip")
+    
+    # Calculate the ratio and create the new column
+    tdf[[column_name]] <- tdf[[paste0("L", level, lipo)]] / tdf[[total_column_name]]
+  }
+}
+
+# Loop through levels for 'HDL' 
+for (level in 1:4) {
+  # Loop through each lipid
+  for (lipo in lipos) {
+    # Construct the column names for the HDLs
+    column_name <- paste0("H", level, lipo, "%")
+    total_column_name <- paste0("H", level, "TotLip")
+    
+    # Calculate the ratio and create the new column
+    tdf[[column_name]] <- tdf[[paste0("H", level, lipo)]] / tdf[[total_column_name]]
+  }
+}
+
+
+
+#Calculate average for % of individual composition for each LDL subfraction within each BMI category
+tdf$L13aveCE <- rowSums(tdf[, c("L1CE%", "L2CE%", "L3CE%")])/3
+tdf$L13aveFC <- rowSums(tdf[, c("L1FC%", "L2FC%", "L3FC%")])/3
+tdf$L13avePL <- rowSums(tdf[, c("L1PL%", "L2PL%", "L3PL%")])/3
+tdf$L13aveTG <- rowSums(tdf[, c("L1TG%", "L2TG%", "L3TG%")])/3
+
+tdf$L46aveCE <- rowSums(tdf[, c("L4CE%", "L5CE%", "L6CE%")])/3
+tdf$L46aveFC <- rowSums(tdf[, c("L4FC%", "L5FC%", "L6FC%")])/3
+tdf$L46avePL <- rowSums(tdf[, c("L4PL%", "L5PL%", "L6PL%")])/3
+tdf$L46aveTG <- rowSums(tdf[, c("L4TG%", "L5TG%", "L6TG%")])/3
+
+
+```
+
+
+```{r}
+tdf2 <- tdf %>% select(cohort, BMI_cat, statin, DM, "L13aveCE":"L46aveTG") 
+
+# renaming the normalisedPN columns for graphing purpose later
+colnames(tdf2) [5] <- "L1_3CE" #average %CE in LDL1-3
+colnames(tdf2) [6] <- "L1_3FC" #average %FC in LDL1-3
+colnames(tdf2) [7] <- "L1_3PL" #average %PL in LDL1-3
+colnames(tdf2) [8] <- "L1_3TG" #average %TG in LDL1-3
+colnames(tdf2) [9] <- "L4_6CE" #average %CE in LDL4_6
+colnames(tdf2) [10] <- "L4_6FC" #average %FC in LDL4_6
+colnames(tdf2) [11] <- "L4_6PL" #average %PL in LDL4_6
+colnames(tdf2) [12] <- "L4_6TG" #average %TG in LDL4_6
+
+tdf2$statin <- ifelse(tdf2$statin == 0, "No Statin", "Statin")
+
+tdf2$BMI_cat <- ifelse(tdf2$BMI_cat == "<25", "BMI<25", "BMI>30")
+
+tdf2 <- tdf2 %>% dplyr::filter(DM == "NDM" & BMI_cat %in% c("BMI<25", "BMI>30"))
+
+```
+
+
+```{r}
+generate_pie_chart <- function(data, variable, particleNo = TRUE, ncol = 2, nrow = 2, page = 1) {
+  # Define the prefix for LDLs variables
+  prefix <- "L4_6"  # Adjust this to your desired prefix
+  
+  # Filter the data based on the selected prefix
+  vars <- grep(pattern = paste0("^", prefix, "(CE|FC|PL|TG)$"), x = names(data), value = TRUE)
+  
+  # Check if 'vars' is empty
+  if (length(vars) == 0) {
+    stop("No matching variables found")
+  }
+  
+  # Ensure 'cohort', 'BMI_cat', 'statin', and 'vars' are present in the data
+  if (!all(c("cohort", "BMI_cat", "statin", vars) %in% names(data))) {
+    stop("Required columns are missing in the data")
+  }
+  
+  df <- data[, c("cohort", "BMI_cat", "statin", vars)]
+  
+  # Pivot the data longer
+  dF <- pivot_longer(data = df, cols = vars, names_to = "name", values_to = "value")
+  
+  # Convert Inf and -Inf in `value` to NA to avoid them impacting mean calculations
+  dF$value[is.infinite(dF$value)] <- NA
+  
+  # Summarize the data by cohort, BMI_cat, statin, and name
+  dF <- dF %>%
+    group_by(cohort, BMI_cat, statin, name) %>%
+    summarise(avg = mean(value, na.rm = TRUE), .groups = "drop")
+  
+  # Ensure all combinations of 'cohort', 'BMI_cat', 'statin', and 'name' are present with zero values
+  df_complete <- tidyr::complete(dF, cohort, BMI_cat, statin, name, fill = list(avg = 0))
+  
+  # Normalize the 'avg' values within each cohort, BMI_cat, and statin
+  # Add a small constant to the sum to avoid division by zero
+  df_normalized <- df_complete %>%
+    group_by(cohort, BMI_cat, statin) %>%
+    mutate(normalized_avg = avg / (sum(avg, na.rm = TRUE) + 1e-6)) %>%
+    mutate(normalized_avg = ifelse(is.infinite(normalized_avg), NA, normalized_avg)) %>%  # Remove any remaining Inf
+    drop_na(normalized_avg)  # Remove rows with NA values in normalized_avg
+  
+  # Create the pie chart for each cohort, BMI_cat, and statin
+  pie_chart <- ggplot(df_normalized, aes(x = "", y = normalized_avg, fill = name)) +
+    geom_bar(stat = "identity", width = 1) +
+    coord_polar(theta = "y") +
+    #scale_fill_manual(values = c("red", "green", "blue", "pink")) +
+    scale_fill_brewer(palette = "Set2") + 
+    theme_void() +
+    theme(legend.position = "right",
+          strip.placement = "outside",
+          strip.text = element_text(size = 10),
+          strip.text.y = element_text(angle = 90),
+          axis.text.y = element_text(hjust = 0),
+          strip.background = element_rect(fill = "white", color = "white"),
+          panel.spacing = unit(0, "lines")) +
+    ggforce::facet_wrap_paginate(~ cohort + BMI_cat + statin, nrow = nrow, ncol = ncol, page = page) +
+    geom_text(aes(label = scales::percent(normalized_avg, accuracy = 1)),
+              position = position_stack(vjust = 0.5), size = 4, fontface = "bold") +
+    labs(fill = NULL)
+  
+  return(pie_chart)
+}
+
+
+```
+
+### LDL1-3
+```{r}
+pc_bus13 <- generate_pie_chart(data = tdf2, particleNo = TRUE, ncol = 2, nrow = 2, page = 1)
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures/Obesity"
+
+svglite::svglite(filename = file.path(pathToPlot,"PieChart_Busselton_Obesity_NDM_IndivComp_L13.svg"))
+pc_bus13
+dev.off()
+```
+
+### LDL4-6
+```{r}
+pc_bus46 <- generate_pie_chart(data = tdf2, particleNo = TRUE, ncol = 2, nrow = 2, page = 1)
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures/Obesity"
+
+svglite::svglite(filename = file.path(pathToPlot,"PieChart_Busselton_Obesity_NDM_IndivComp_L46.svg"))
+pc_bus46
+dev.off()
+```
+
+
+## Saudi
+```{r}
+# tdf = existing dataframe from making Fig3 up above
+
+# Extract CE from total CH
+tdf$L1CE <- tdf$L1CH - tdf$L1FC
+tdf$L2CE <- tdf$L2CH - tdf$L2FC
+tdf$L3CE <- tdf$L3CH - tdf$L3FC
+tdf$L4CE <- tdf$L4CH - tdf$L4FC
+tdf$L5CE <- tdf$L5CH - tdf$L5FC
+tdf$L6CE <- tdf$L6CH - tdf$L6FC
+
+# Extract CE from total CH
+tdf$H1CE <- tdf$H1CH - tdf$H1FC
+tdf$H2CE <- tdf$H2CH - tdf$H2FC
+tdf$H3CE <- tdf$H3CH - tdf$H3FC
+tdf$H4CE <- tdf$H4CH - tdf$H4FC
+
+# Calculate total lipid for each level
+tdf$L1TotLip <- rowSums(tdf[, c("L1TG", "L1FC", "L1CE", "L1PL")])
+tdf$L2TotLip <- rowSums(tdf[, c("L2TG", "L2FC", "L2CE", "L2PL")])
+tdf$L3TotLip <- rowSums(tdf[, c("L3TG", "L3FC", "L3CE", "L3PL")])
+tdf$L4TotLip <- rowSums(tdf[, c("L4TG", "L4FC", "L4CE", "L4PL")])
+tdf$L5TotLip <- rowSums(tdf[, c("L5TG", "L5FC", "L5CE", "L5PL")])
+tdf$L6TotLip <- rowSums(tdf[, c("L6TG", "L6FC", "L6CE", "L6PL")])
+
+tdf$H1TotLip <- rowSums(tdf[, c("H1TG", "H1FC", "H1CE", "H1PL")])
+tdf$H2TotLip <- rowSums(tdf[, c("H2TG", "H2FC", "H2CE", "H2PL")])
+tdf$H3TotLip <- rowSums(tdf[, c("H3TG", "H3FC", "H3CE", "H3PL")])
+tdf$H4TotLip <- rowSums(tdf[, c("H4TG", "H4FC", "H4CE", "H4PL")])
+
+# Calculate percentages for each lipid component at each level, Do CH not CE as you use CH and FC to make CE
+lipos <- c("TG", "FC", "CE", "PL")
+
+# Loop through levels for 'LDL' 
+for (level in 1:6) {
+  # Loop through each lipid
+  for (lipo in lipos) {
+    # Construct the column names for the LDLs
+    column_name <- paste0("L", level, lipo, "%")
+    total_column_name <- paste0("L", level, "TotLip")
+    
+    # Calculate the ratio and create the new column
+    tdf[[column_name]] <- tdf[[paste0("L", level, lipo)]] / tdf[[total_column_name]]
+  }
+}
+
+# Loop through levels for 'HDL' 
+for (level in 1:4) {
+  # Loop through each lipid
+  for (lipo in lipos) {
+    # Construct the column names for the HDLs
+    column_name <- paste0("H", level, lipo, "%")
+    total_column_name <- paste0("H", level, "TotLip")
+    
+    # Calculate the ratio and create the new column
+    tdf[[column_name]] <- tdf[[paste0("H", level, lipo)]] / tdf[[total_column_name]]
+  }
+}
+
+#Calculate average for % of individual composition for each LDL subfraction within each BMI category
+tdf$L13aveCE <- rowSums(tdf[, c("L1CE%", "L2CE%", "L3CE%")])/3
+tdf$L13aveFC <- rowSums(tdf[, c("L1FC%", "L2FC%", "L3FC%")])/3
+tdf$L13avePL <- rowSums(tdf[, c("L1PL%", "L2PL%", "L3PL%")])/3
+tdf$L13aveTG <- rowSums(tdf[, c("L1TG%", "L2TG%", "L3TG%")])/3
+
+tdf$L46aveCE <- rowSums(tdf[, c("L4CE%", "L5CE%", "L6CE%")])/3
+tdf$L46aveFC <- rowSums(tdf[, c("L4FC%", "L5FC%", "L6FC%")])/3
+tdf$L46avePL <- rowSums(tdf[, c("L4PL%", "L5PL%", "L6PL%")])/3
+tdf$L46aveTG <- rowSums(tdf[, c("L4TG%", "L5TG%", "L6TG%")])/3
+
+
+```
+
+
+```{r}
+tdf2 <- tdf %>% select(cohort, BMI_cat,DM, "L13aveCE":"L46aveTG") 
+
+# renaming the normalisedPN columns for graphing purpose later
+colnames(tdf2) [4] <- "L1_3CE" #average %CE in LDL1-3
+colnames(tdf2) [5] <- "L1_3FC" #average %FC in LDL1-3
+colnames(tdf2) [6] <- "L1_3PL" #average %PL in LDL1-3
+colnames(tdf2) [7] <- "L1_3TG" #average %TG in LDL1-3
+colnames(tdf2) [8] <- "L4_6CE" #average %CE in LDL4_6
+colnames(tdf2) [9] <- "L4_6FC" #average %FC in LDL4_6
+colnames(tdf2) [10] <- "L4_6PL" #average %PL in LDL4_6
+colnames(tdf2) [11] <- "L4_6TG" #average %TG in LDL4_6
+
+
+tdf2$BMI_cat <- ifelse(tdf2$BMI_cat == "<25", "BMI<25", "BMI>30")
+
+tdf2 <- tdf2 %>% dplyr::filter(DM == "NDM" & BMI_cat %in% c("BMI<25", "BMI>30"))
+
+```
+
+
+```{r}
+generate_pie_chart <- function(data, variable, particleNo = TRUE, ncol = 2, nrow = 2, page = 1) {
+  # Define the prefix for LDLs variables
+  #prefix <- "L1_3"
+  prefix <- "L4_6"  # Adjust this to LDLs 1-3 or LDL4-6
+  
+  # Filter the data based on the selected prefix
+  vars <- grep(pattern = paste0("^", prefix, "(CE|FC|PL|TG)$"), x = names(data), value = TRUE)
+  
+  # Check if 'vars' is empty
+  if (length(vars) == 0) {
+    stop("No matching variables found")
+  }
+  
+  # Ensure 'cohort', 'BMI_cat', 'statin', and 'vars' are present in the data
+  if (!all(c("cohort", "BMI_cat", vars) %in% names(data))) {
+    stop("Required columns are missing in the data")
+  }
+  
+  df <- data[, c("cohort", "BMI_cat", vars)]
+  
+  # Pivot the data longer
+  dF <- pivot_longer(data = df, cols = vars, names_to = "name", values_to = "value")
+  
+  # Convert Inf and -Inf in `value` to NA to avoid them impacting mean calculations
+  dF$value[is.infinite(dF$value)] <- NA
+  
+  # Summarize the data by cohort, BMI_cat, and name
+  dF <- dF %>%
+    group_by(cohort, BMI_cat, name) %>%
+    summarise(avg = mean(value, na.rm = TRUE), .groups = "drop")
+  
+  # Ensure all combinations of 'cohort', 'BMI_cat', and 'name' are present with zero values
+  df_complete <- tidyr::complete(dF, cohort, BMI_cat, name, fill = list(avg = 0))
+  
+  # Normalize the 'avg' values within each cohort, and BMI_cat 
+  # Add a small constant to the sum to avoid division by zero
+  df_normalized <- df_complete %>%
+    group_by(cohort, BMI_cat) %>%
+    mutate(normalized_avg = avg / (sum(avg, na.rm = TRUE) + 1e-6)) %>%
+    mutate(normalized_avg = ifelse(is.infinite(normalized_avg), NA, normalized_avg)) %>%  # Remove any remaining Inf
+    drop_na(normalized_avg)  # Remove rows with NA values in normalized_avg
+  
+  # Create the pie chart for each cohort, BMI_cat, and statin
+  pie_chart <- ggplot(df_normalized, aes(x = "", y = normalized_avg, fill = name)) +
+    geom_bar(stat = "identity", width = 1) +
+    coord_polar(theta = "y") +
+    #scale_fill_manual(values = c("red", "green", "blue", "pink")) +
+    scale_fill_brewer(palette = "Set2") + 
+    theme_void() +
+    theme(legend.position = "right",
+          strip.placement = "outside",
+          strip.text = element_text(size = 10),
+          strip.text.y = element_text(angle = 90),
+          axis.text.y = element_text(hjust = 0),
+          strip.background = element_rect(fill = "white", color = "white"),
+          panel.spacing = unit(0, "lines")) +
+    ggforce::facet_wrap_paginate(~ cohort + BMI_cat, nrow = nrow, ncol = ncol, page = page) +
+    geom_text(aes(label = scales::percent(normalized_avg, accuracy = 1)),
+              position = position_stack(vjust = 0.5), size = 4, fontface = "bold") +
+    labs(fill = NULL)
+  
+  return(pie_chart)
+}
+
+
+```
+
+
+### LDL1-3
+```{r}
+# CHANGE PREFIX TO "L1_3"
+pc_sau13 <- generate_pie_chart(data = tdf2, particleNo = TRUE, ncol = 2, nrow = 2, page = 1)
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures/Obesity"
+
+svglite::svglite(filename = file.path(pathToPlot,"PieChart_Saudi_Obesity_NDM_IndivComp_L13.svg"))
+pc_sau13
+dev.off()
+```
+
+### LDL4-6
+```{r}
+# CHANGE PREFIX TO "L4_6"
+pc_sau46 <- generate_pie_chart(data = tdf2, particleNo = TRUE, ncol = 2, nrow = 2, page = 1)
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures/Obesity"
+
+svglite::svglite(filename = file.path(pathToPlot,"PieChart_Saudi_Obesity_NDM_IndivComp_L46.svg"))
+pc_sau46
+dev.off()
+```
+
+
+## Indiv Subfraction 
+## Busselton cohort Only 
+```{r}
+### Group by DM or NDM
+#lipoPieChart(BHA_Lipo,group = BHA_Anno$BMI_cat)
+
+```
+
+### Group by DM or NDM, subgroup by BMI cat - BETTER grouping. This is the one I use. 
+```{r}
+
+lipoPieChart(BHA_Lipo,cohort = BHA_Anno$BMI_cat,group = BHA_Anno$statin)
+
+```
+
+
+## Saudi cohort Only 
+### Group by DM or NDM, subgroup by BMI cat - BETTER grouping. This is the one I use. 
+```{r}
+
+lipoPieChart(Dia_Lipo,cohort = Dia_Anno$DM,group = Dia_Anno$BMI_cat)
+
+```
+
+
+# Fig5. Split corrplot - LDL & HDL - BUS only (Saudi has no Glyc, SPC info)
+## LDL reduced corrplot
+```{r}
+tdf<-cbind(BHA_Lipo%>%dplyr::select(L1CH:L6CH), BHA_SPC%>%dplyr::select(GlycB))
+
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Healthy" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Healthy" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "NDM vs DM HealthyWeight Busselton",
+             c1Name = "NDM",
+             c2Name = "DM"))
+
+
+svglite::svglite(filename = file.path(pathToPlot,"SplitCorrPlotBUS_LDL_Hw_reduced.svg"))
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "NDM vs DM HealthyWeight Busselton",
+             c1Name = "NDM",
+             c2Name = "DM"))
+dev.off()
+```
+
+
+```{r}
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Obese" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Obese" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+
+plotSplitCor(corList = corList,type = c("lower"),
+             optns = list(plotTitle = "NDM vs DM Obese Busselton",
+             c1Name = "NDM",
+             c2Name = "DM"))
+
+
+svglite::svglite(filename = file.path(pathToPlot,"SplitCorrPlotBUS_LDL_Ob_reduced.svg"))
+plotSplitCor(corList = corList,type = c("lower"),
+             optns = list(plotTitle = "NDM vs DM Obese Busselton",
+             c1Name = "NDM",
+             c2Name = "DM"))
+dev.off()
+```
+
+
+
+## LDL - full corrplot
+```{r,fig.width=8,fig.height=8}
+tdf<-cbind(BHA_Lipo%>%dplyr::select(L1TG:L6PL), BHA_SPC%>%dplyr::select(GlycB))
+
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Healthy" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Healthy" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "NDM vs DM HealthyWeight Busselton",
+             c1Name = "NDM",
+             c2Name = "DM"))
+
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Obese" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Obese" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("lower"),
+             optns = list(plotTitle = "NDM vs DM Obese Busselton",
+             c1Name = "NDM",
+             c2Name = "DM"))
+
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures"
+
+
+svglite::svglite(filename = file.path(pathToPlot,"SplitCorrPlotBUS_LDL_Hw.svg"))
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "NDM vs DM HealthyWeight Busselton",
+             c1Name = "NDM",
+             c2Name = "DM"))
+dev.off()
+
+svglite::svglite(filename = file.path(pathToPlot,"SplitCorrPlotBUS_LDL_Ob.svg"))
+plotSplitCor(corList = corList,type = c("lower"),
+             optns = list(plotTitle = "NDM vs DM Obese Busselton",
+             c1Name = "NDM",
+             c2Name = "DM"))
+dev.off()
+```
+
+
+## HDL
+```{r,fig.width=8,fig.height=8}
+tdf<-cbind(BHA_Lipo%>%dplyr::select(H1TG:H4PL), BHA_SPC%>%dplyr::select(GlycB))
+
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Healthy" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Healthy" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "NDM vs DM HealthyWeight Busselton",
+             c1Name = "NDM",
+             c2Name = "DM"))
+
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Obese" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Obese" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("lower"),
+             optns = list(plotTitle = "NDM vs DM Obese Busselton",
+             c1Name = "NDM",
+             c2Name = "DM"))
+
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures"
+
+
+svglite::svglite(filename = file.path(pathToPlot,"SplitCorrPlotBUS_HDL_Hw.svg"))
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "NDM vs DM HealthyWeight Busselton",
+             c1Name = "NDM",
+             c2Name = "DM"))
+dev.off()
+
+svglite::svglite(filename = file.path(pathToPlot,"SplitCorrPlotBUS_HDL_Ob.svg"))
+plotSplitCor(corList = corList,type = c("lower"),
+             optns = list(plotTitle = "NDM vs DM Obese Busselton",
+             c1Name = "NDM",
+             c2Name = "DM"))
+dev.off()
+
+rm(corList)
+```
+
+
+# SuppMat Split correlation plot
+## BHAS BMI(18.5-25.0] vs BMI(30>)
+### TPTG - LDAB
+```{r,fig.width=8,fig.height=8}
+table(BHA_Anno$BMI_cat)
+BHA_Lipo<-data.frame(BHA_Lipo)
+tdf<-BHA_Lipo%>%dplyr::select(TPTG:LDAB)
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Healthy",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Obese",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy vs Obese BHAS",
+             c1Name = "Healthy",
+             c2Name = "Obese"))
+
+tdf<-cbind(BHA_Lipo%>%dplyr::select(TPTG:LDAB),BHA_SPC%>%dplyr::select(GlycA, GlycB))
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Healthy",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Obese",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy vs Obese BHAS",
+             c1Name = "Healthy",
+             c2Name = "Obese"))
+
+```
+
+### V1TG - V5PL
+```{r,fig.width=8,fig.height=8}
+tdf<-BHA_Lipo%>%dplyr::select(V1TG:V5PL)
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Healthy",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Obese",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy vs Obese BHAS",
+             c1Name = "Healthy",
+             c2Name = "Obese"))
+```
+
+### L1TG - L6PL
+```{r,fig.width=8,fig.height=8}
+tdf<-BHA_Lipo%>%dplyr::select(L1TG:L6PL)
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Healthy",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Obese",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy vs Obese BHAS",
+             c1Name = "Healthy",
+             c2Name = "Obese"))
+```
+
+### H1TG - H4PL
+```{r,fig.width=8,fig.height=8}
+tdf<-BHA_Lipo%>%dplyr::select(H1TG:H4PL)
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Healthy",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Obese",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy vs Obese BHAS",
+             c1Name = "Healthy",
+             c2Name = "Obese"))
+```
+
+
+## BHAS BMI(18.5-25.0] NDM vs BMI(18.5-25.0] DM2
+### TPTG - LDAB
+```{r,fig.width=8,fig.height=8}
+#table(BHA_Anno$DM, BHA_Anno$BMI_cat)
+BHA_Lipo<-data.frame(BHA_Lipo)
+tdf<-BHA_Lipo%>%dplyr::select(TPTG:LDAB)
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Healthy" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Healthy" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy NDM vs Healthy DM BHAS",
+             c1Name = "Healthy_NDM",
+             c2Name = "Healthy_DM"))
+```
+
+### V1TG - V5PL
+```{r,fig.width=8,fig.height=8}
+tdf<-BHA_Lipo%>%dplyr::select(V1TG:V5PL)
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Healthy" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Healthy" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy NDM vs Healthy DM BHAS",
+             c1Name = "Healthy_NDM",
+             c2Name = "Healthy_DM"))
+```
+
+### L1TG - L6PL
+```{r,fig.width=8,fig.height=8}
+tdf<-BHA_Lipo%>%dplyr::select(L1TG:L6PL)
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Healthy" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Healthy" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy NDM vs Healthy DM BHAS",
+             c1Name = "Healthy_NDM",
+             c2Name = "Healthy_DM"))
+```
+
+### H1TG - H4PL
+```{r,fig.width=8,fig.height=8}
+tdf<-BHA_Lipo%>%dplyr::select(H1TG:H4PL)
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Healthy" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Healthy" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy NDM vs Healthy DM BHAS",
+             c1Name = "Healthy_NDM",
+             c2Name = "Healthy_DM"))
+```
+
+
+## BHAS BMI(30>) NDM vs BMI(30>) DM2
+### TPTG - LDAB
+```{r,fig.width=8,fig.height=8}
+#table(BHA_Anno$DM, BHA_Anno$BMI_cat)
+BHA_Lipo<-data.frame(BHA_Lipo)
+tdf<-BHA_Lipo%>%dplyr::select(TPTG:LDAB)
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Obese" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Obese" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Obese NDM vs Obese DM BHAS",
+             c1Name = "Obese_NDM",
+             c2Name = "Obese_DM"))
+
+tdf<-cbind(BHA_Lipo%>%dplyr::select(TPTG:LDAB), BHA_SPC%>%dplyr::select(GlycA, GlycB))
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Obese" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Obese" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("lower"),
+             optns = list(plotTitle = "Obese NDM vs Obese DM BHAS",
+             c1Name = "Obese_NDM",
+             c2Name = "Obese_DM"))
+```
+
+
+### V1TG - V5PL
+```{r,fig.width=8,fig.height=8}
+tdf<-BHA_Lipo%>%dplyr::select(V1TG:V5PL)
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Obese" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Obese" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Obese NDM vs Obese DM BHAS",
+             c1Name = "Obese_NDM",
+             c2Name = "Obese_DM"))
+```
+
+### L1TG - L6PL
+```{r,fig.width=8,fig.height=8}
+tdf<-BHA_Lipo%>%dplyr::select(L1TG:L6PL)
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Obese" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Obese" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Obese NDM vs Obese DM BHAS",
+             c1Name = "Obese_NDM",
+             c2Name = "Obese_DM"))
+```
+
+### H1TG - H4PL
+```{r,fig.width=8,fig.height=8}
+tdf<-BHA_Lipo%>%dplyr::select(H1TG:H4PL)
+corList<-list(cor(tdf[BHA_Anno$BMI_cat=="Obese" & BHA_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[BHA_Anno$BMI_cat=="Obese" &  BHA_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Obese NDM vs Obese DM BHAS",
+             c1Name = "Obese_NDM",
+             c2Name = "Obese_DM"))
+```
+
+
+## SAUDI BMI(18.5-25.0] vs BMI(30>)
+### TPTG - LDAB
+```{r,fig.width=8,fig.height=8}
+table(Dia_Anno$BMI_cat)
+tdf<-Dia_Lipo%>%dplyr::select(TPTG:LDAB)
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Healthy",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Obese",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy vs Obese Saudi",
+             c1Name = "Healthy",
+             c2Name = "Obese"))
+```
+
+### V1TG - V5PL
+```{r,fig.width=8,fig.height=8}
+tdf<-Dia_Lipo%>%dplyr::select(V1TG:V5PL)
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Healthy",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Obese",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy vs Obese Saudi",
+             c1Name = "Healthy",
+             c2Name = "Obese"))
+```
+
+### L1TG - L6PL
+```{r,fig.width=8,fig.height=8}
+tdf<-Dia_Lipo%>%dplyr::select(L1TG:L6PL)
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Healthy",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Obese",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy vs Obese Saudi",
+             c1Name = "Healthy",
+             c2Name = "Obese"))
+```
+
+### H1TG - H4PL
+```{r,fig.width=8,fig.height=8}
+tdf<-Dia_Lipo%>%dplyr::select(H1TG:H4PL)
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Healthy",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Obese",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy vs Obese Saudi",
+             c1Name = "Healthy",
+             c2Name = "Obese"))
+```
+
+
+## SAUDI BMI(18.5-25.0] NDM vs BMI(18.5-25.0] DM2 
+### TPTG - LDAB
+```{r,fig.width=8,fig.height=8}
+#table(Dia_Anno$DM, Dia_Anno$BMI_cat)
+tdf<-Dia_Lipo%>%dplyr::select(TPTG:LDAB)
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Healthy" & Dia_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Healthy" & Dia_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy NDM vs Healthy DM Saudi",
+             c1Name = "Healthy_NDM",
+             c2Name = "Healthy_DM"))
+```
+
+### V1TG - V5PL
+```{r,fig.width=8,fig.height=8}
+tdf<-Dia_Lipo%>%dplyr::select(V1TG:V5PL)
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Healthy" & Dia_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Healthy" & Dia_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy NDM vs Healthy DM Saudi",
+             c1Name = "Healthy_NDM",
+             c2Name = "Healthy_DM"))
+```
+
+### L1TG - L6PL
+```{r,fig.width=8,fig.height=8}
+tdf<-Dia_Lipo%>%dplyr::select(L1TG:L6PL)
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Healthy" & Dia_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Healthy" & Dia_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy NDM vs Healthy DM Saudi",
+             c1Name = "Healthy_NDM",
+             c2Name = "Healthy_DM"))
+```
+
+### H1TG - H4PL
+```{r,fig.width=8,fig.height=8}
+tdf<-Dia_Lipo%>%dplyr::select(H1TG:H4PL)
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Healthy" & Dia_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Healthy" & Dia_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Healthy NDM vs Healthy DM Saudi",
+             c1Name = "Healthy_NDM",
+             c2Name = "Healthy_DM"))
+
+```
+
+
+
+## SAUDI BMI(30>) NDM vs BMI(30>) DM2 
+### TPTG - LDAB
+```{r,fig.width=8,fig.height=8}
+#table(Dia_Anno$DM, Dia_Anno$BMI_cat)
+tdf<-Dia_Lipo%>%dplyr::select(TPTG:LDAB)
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Obese" & Dia_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Obese" & Dia_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Obese NDM vs Obese DM Saudi",
+             c1Name = "Obese_NDM",
+             c2Name = "Obese_DM"))
+```
+
+### V1TG - V5PL
+```{r,fig.width=8,fig.height=8}
+tdf<-Dia_Lipo%>%dplyr::select(V1TG:V5PL)
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Obese" & Dia_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Obese" & Dia_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Obese NDM vs Obese DM Saudi",
+             c1Name = "Obese_NDM",
+             c2Name = "Obese_DM"))
+```
+
+### L1TG - L6PL
+```{r,fig.width=8,fig.height=8}
+tdf<-Dia_Lipo%>%dplyr::select(L1TG:L6PL)
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Obese" & Dia_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Obese" & Dia_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Obese NDM vs Obese DM Saudi",
+             c1Name = "Obese_NDM",
+             c2Name = "Obese_DM"))
+```
+
+# SuppMat - Saudi(no GlycB)
+```{r,fig.width=8,fig.height=8}
+tdf<-cbind(Dia_Lipo%>%dplyr::select(L1TG:L6PL), Dia_SPC%>%dplyr::select(GlycB))
+
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Healthy" & Dia_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Healthy" & Dia_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "NDM vs DM HealthyWeight Saudi",
+             c1Name = "NDM",
+             c2Name = "DM"))
+
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Obese" & Dia_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Obese" &  Dia_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("lower"),
+             optns = list(plotTitle = "NDM vs DM Obese Saudi",
+             c1Name = "NDM",
+             c2Name = "DM"))
+
+
+pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Figures"
+
+
+svglite::svglite(filename = file.path(pathToPlot,"SplitCorrPlotSAU_Hw.svg"))
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "NDM vs DM HealthyWeight Saudi",
+             c1Name = "NDM",
+             c2Name = "DM"))
+dev.off()
+
+svglite::svglite(filename = file.path(pathToPlot,"SplitCorrPlotSAU_Ob.svg"))
+plotSplitCor(corList = corList,type = c("lower"),
+             optns = list(plotTitle = "NDM vs DM Obese Saudi",
+             c1Name = "NDM",
+             c2Name = "DM"))
+dev.off()
+
+
+```
+
+
+### H1TG - H4PL
+```{r,fig.width=8,fig.height=8}
+tdf<-Dia_Lipo%>%dplyr::select(H1TG:H4PL)
+corList<-list(cor(tdf[Dia_Anno$BMI_cat=="Obese" & Dia_Anno$DM=="NDM",],method = "spearman"),
+              cor(tdf[Dia_Anno$BMI_cat=="Obese" & Dia_Anno$DM=="DM",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Obese NDM vs Obese DM Saudi",
+             c1Name = "Obese_NDM",
+             c2Name = "Obese_DM"))
+
+```
+
+
+## BHA vs SAUDI
+### TPTG - LDAB
+```{r,fig.width=8,fig.height=8}
+tdf<-rbind(BHA_Lipo%>%dplyr::select(TPTG:LDAB),
+           Dia_Lipo%>%dplyr::select(TPTG:LDAB))
+
+anno<-rbind(BHA_Anno,Dia_Anno)
+corList<-list(cor(tdf[anno$BMI_cat=="Healthy" & anno$cohort=="Busselton",],method = "spearman"),
+              cor(tdf[anno$BMI_cat=="Healthy" & anno$cohort=="DiaObesity",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Busselton vs Saudi Healthy",
+             c1Name = "Busselton",
+             c2Name = "Saudi"))
+
+corList<-list(cor(tdf[anno$BMI_cat=="OverWeight" & anno$cohort=="Busselton",],method = "spearman"),
+              cor(tdf[anno$BMI_cat=="OverWeight" & anno$cohort=="DiaObesity",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Busselton vs Saudi OverWeight",
+             c1Name = "Busselton",
+             c2Name = "Saudi"))
+
+
+corList<-list(cor(tdf[anno$BMI_cat=="Obese" & anno$cohort=="Busselton",],method = "spearman"),
+              cor(tdf[anno$BMI_cat=="Obese" & anno$cohort=="DiaObesity",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Busselton vs Saudi Obese",
+             c1Name = "Busselton",
+             c2Name = "Saudi"))
+```
+
+### V1TG - V5PL
+```{r,fig.width=8,fig.height=8}
+tdf<-rbind(BHA_Lipo%>%dplyr::select(V1TG:V5PL),
+           Dia_Lipo%>%dplyr::select(V1TG:V5PL))
+
+anno<-rbind(BHA_Anno,Dia_Anno)
+corList<-list(cor(tdf[anno$BMI_cat=="Healthy" & anno$cohort=="Busselton",],method = "spearman"),
+              cor(tdf[anno$BMI_cat=="Healthy" & anno$cohort=="DiaObesity",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Busselton vs Saudi Healthy",
+             c1Name = "Busselton",
+             c2Name = "Saudi"))
+
+corList<-list(cor(tdf[anno$BMI_cat=="OverWeight" & anno$cohort=="Busselton",],method = "spearman"),
+              cor(tdf[anno$BMI_cat=="OverWeight" & anno$cohort=="DiaObesity",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Busselton vs Saudi OverWeight",
+             c1Name = "Busselton",
+             c2Name = "Saudi"))
+
+
+corList<-list(cor(tdf[anno$BMI_cat=="Obese" & anno$cohort=="Busselton",],method = "spearman"),
+              cor(tdf[anno$BMI_cat=="Obese" & anno$cohort=="DiaObesity",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Busselton vs Saudi Obese",
+             c1Name = "Busselton",
+             c2Name = "Saudi"))
+```
+
+### L1TG - L6PL
+```{r,fig.width=8,fig.height=8}
+tdf<-rbind(BHA_Lipo%>%dplyr::select(L1TG:L6PL),
+           Dia_Lipo%>%dplyr::select(L1TG:L6PL))
+
+anno<-rbind(BHA_Anno,Dia_Anno)
+corList<-list(cor(tdf[anno$BMI_cat=="Healthy" & anno$cohort=="Busselton",],method = "spearman"),
+              cor(tdf[anno$BMI_cat=="Healthy" & anno$cohort=="DiaObesity",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Busselton vs Saudi Healthy",
+             c1Name = "Busselton",
+             c2Name = "Saudi"))
+
+corList<-list(cor(tdf[anno$BMI_cat=="OverWeight" & anno$cohort=="Busselton",],method = "spearman"),
+              cor(tdf[anno$BMI_cat=="OverWeight" & anno$cohort=="DiaObesity",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Busselton vs Saudi OverWeight",
+             c1Name = "Busselton",
+             c2Name = "Saudi"))
+
+
+corList<-list(cor(tdf[anno$BMI_cat=="Obese" & anno$cohort=="Busselton",],method = "spearman"),
+              cor(tdf[anno$BMI_cat=="Obese" & anno$cohort=="DiaObesity",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Busselton vs Saudi Obese",
+             c1Name = "Busselton",
+             c2Name = "Saudi"))
+```
+
+### H1TG - H4PL
+```{r,fig.width=8,fig.height=8}
+tdf<-rbind(BHA_Lipo%>%dplyr::select(H1TG:H4PL),
+           Dia_Lipo%>%dplyr::select(H1TG:H4PL))
+
+anno<-rbind(BHA_Anno,Dia_Anno)
+corList<-list(cor(tdf[anno$BMI_cat=="Healthy" & anno$cohort=="Busselton",],method = "spearman"),
+              cor(tdf[anno$BMI_cat=="Healthy" & anno$cohort=="DiaObesity",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Busselton vs Saudi Healthy",
+             c1Name = "Busselton",
+             c2Name = "Saudi"))
+
+corList<-list(cor(tdf[anno$BMI_cat=="OverWeight" & anno$cohort=="Busselton",],method = "spearman"),
+              cor(tdf[anno$BMI_cat=="OverWeight" & anno$cohort=="DiaObesity",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Busselton vs Saudi OverWeight",
+             c1Name = "Busselton",
+             c2Name = "Saudi"))
+
+
+corList<-list(cor(tdf[anno$BMI_cat=="Obese" & anno$cohort=="Busselton",],method = "spearman"),
+              cor(tdf[anno$BMI_cat=="Obese" & anno$cohort=="DiaObesity",],method = "spearman"))
+
+plotSplitCor(corList = corList,type = c("upper"),
+             optns = list(plotTitle = "Busselton vs Saudi Obese",
+             c1Name = "Busselton",
+             c2Name = "Saudi"))
+```
+
+
+
