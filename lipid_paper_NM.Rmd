@@ -1,0 +1,3904 @@
+---
+title: "Lipid and Lipo Multi-level Modeling"
+author: "Novia Minaee"
+date: "`r Sys.Date()`"
+output: html_document
+editor_options: 
+  
+  chunk_output_type: console
+---
+
+<style type="text/css">
+.main-container {
+  max-width: 1200px;
+  margin-left: auto;
+  margin-right: auto;
+}
+</style>
+
+
+```{r setup}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE, comment = "")
+```
+
+
+
+```{r}
+library(dplyr)
+#library(readr)
+library(reshape2)
+library(ggplot2)
+library(ggrepel)
+library(tibble)
+#library(ggpubr)
+library(mva.plots)
+#library(ca)
+library(tidyr)
+library(tidyverse)
+#library(corrplot)
+#library(GGally)
+library(stats)
+#library(pheatmap)
+#library(cluster)
+#library(gridExtra)
+#library(htmlTable)
+# library(broom)
+# library(svglite)
+# library(cowplot)
+# library(ggradar)
+# library(lemon)
+```
+
+
+```{r}
+setwd("~/Desktop/Diabetes_Obesity/Busselton")
+```
+
+# Set up
+## Loading data 
+
+Metadata: Anno_t1_MH_new.csv - Lipo paper only used timepoint1
+
+Lipid data: Busselton_PLA_MS_Lipids.daE
+
+```{r}
+#setting the path 
+Sys.setenv(DATASETS = "/Users/novia/DATASETS")
+pathToData <- file.path(Sys.getenv()['DATASETS'], "Busselton")
+```
+
+
+
+```{r}
+# Annotation 
+Annotation<-read.csv(file.path(pathToData,"rawData", "meta", "Anno_t1_MH_new.csv"))
+
+
+# loading Lipid MS data 
+lipids<- local(get(load(file.path(pathToData,"DataElements","Busselton_PLA_MS_Lipids.daE"))))
+Lipids<-data.frame(apply(lipids@.Data,2,as.numeric))
+Lipids_ANN<-lipids@obsDescr[[1]]
+idx<-match(Annotation$sampleID,Lipids_ANN$sampleID)
+
+Lipids<-Lipids[which(Lipids_ANN$sampleID %in% Annotation$sampleID),] #1976
+Lipids_ANN<-Lipids_ANN[which(Lipids_ANN$sampleID %in% Annotation$sampleID),] #1976
+
+# Lipids and Lipids_ANN are row-matched.
+# Lipids_ANN and Annotation are sampleID-matched.
+rm(idx, lipids)
+
+# Identify rows without any NAs in Lipids
+complete_rows <- complete.cases(Lipids)
+
+# Identify rows with any NA values
+rows_with_na <- which(!complete_rows) #41
+
+Lipids<-Lipids[-rows_with_na, ] 
+Lipids_ANN<-Lipids_ANN[-rows_with_na, ]
+Annotation<-Annotation[-rows_with_na, ]
+
+table(Lipids_ANN$sampleID == Annotation$sampleID)
+#TRUE 
+#1935 
+
+table(rownames(Lipids_ANN) == rownames(Lipids))
+# TRUE 
+# 1935 
+
+```
+
+
+## Creating subset for method paper
+
+- Approximately 200 Healthy participants
+- Approximately 200 Obese participants 
+
+
+```{r}
+Combined_Data<-data.frame(Annotation,Lipids)
+idx_hty<-which(Annotation$Summary_Healthy == 1)
+idx_obs<-which(Annotation$Summary_overweight_idx ==1)
+
+# sampling - must set.seed to replicate
+set.seed(123)
+
+idx_obs_sub <- sample(idx_obs, 255)
+common_values <- intersect(idx_obs, idx_obs_sub) #to check if sub-setting works ok.
+
+Combined_subData<-Combined_Data[c(idx_hty, idx_obs_sub), ]
+
+Combined_subData <- Combined_subData%>%
+  mutate(Group = ifelse(Summary_Healthy==1,"Hw",NA),
+         Group = ifelse(Summary_overweight_idx==1,"Ob",Group)) %>%  relocate(Group,.after = bloodno6)
+
+
+busso <- Combined_subData
+
+rm(Combined_subData)
+ 
+lipidList <- busso %>%
+  select(CE.14.0.:TAG.60.11_FA22.6.) %>%
+  colnames(.)
+```
+ 
+## Deconfounding
+```{r}
+df <- data.frame(index = 1:nrow(busso))
+
+bussoLog <- busso %>%
+  #select(bmi, c_reactive_protein, cholesterol, all_of(lipidList)) %>%
+  select(bmi, all_of(lipidList)) %>%
+  mutate(across(where(is.numeric), ~ log10(.))) %>%
+  cbind(busso %>% select(age, sex)) %>%
+  relocate(c(age, sex), .before = bmi)
+
+bussoLog <- na.omit(bussoLog) # there are 2 NAs in cholesterol.
+#df <- data.frame(index = 1:nrow(bussoLog)) # just when including cholesterol 
+#varList <- c("bmi", "c_reactive_protein", "cholesterol", all_of(lipidList))
+
+varList <- c("bmi", all_of(lipidList))
+
+for (i in varList) {
+  var <- bussoLog[[i]]
+ 
+  mod <- lm(var ~ age + sex, data = bussoLog)
+ 
+  df[[i]] <- residuals(mod)
+}
+ 
+bussoCorrected <- df[-1] %>%
+  scale() %>%
+  as.data.frame()
+
+rm(df, mod, var, varList, Annotation, bussoLog, Combined_Data, Lipids, Lipids_ANN, common_values, complete_rows, idx_hty, idx_obs, idx_obs_sub, rows_with_na)
+#save(bussoCorrected, file="Corrected_Buss_w_BMI_CRP_CHOL_02092024.rda")
+```
+
+
+
+# OPLS-R
+### BMI
+```{r}
+set.seed(214)
+X = bussoCorrected[, -c(1:3)] # all lipids minus bmi column. 
+Y = bussoCorrected$bmi 
+
+#range(Y)
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+#plotScores(model = oplsR_bmi, optns = list(ellipse = "hotellings", color = bussoCorrected$bmi, outlierLabels = busso$sampleID, plotTitle = "OPLS-R"))
+
+```
+
+
+```{r}
+# List of predict loadingMN
+# small_p1 <- data.frame(p1 = oplsR_bmi@loadingMN) %>%
+#     arrange(p1) %>%
+#     head(25)
+
+
+large_p1 <- data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(50)
+
+oplsR_top50_p1 <- data.frame(lipid = row.names(large_p1), p1 = large_p1$p1)
+
+# write.csv(small_p1, file = "BMI_small_p1.csv", row.names = TRUE)
+#write.csv(large_p1, file = "OPLSR_top50_pred_loading_toBMI.csv", row.names = TRUE)
+
+#NOTE: I need more of top 50 not the bottom one to compare it to the other methods. 
+
+# List of orthoLoadingMN components -- don't need it at this stage (04/10/2024)
+components <- c("o1", "o2", "o3", "o4", "o5")
+
+# Initialize lists to store the results
+#small_results <- list()
+large_results <- list()
+
+# Loop through each component
+for (component in components) {
+  # Access the orthoLoadingMN matrix dynamically
+  ortho_loading <- oplsR_bmi@orthoLoadingMN[, component]
+
+  # Create small_o: top 50 sorted entries
+  # small_o <- data.frame(o = ortho_loading) %>%
+  #   arrange(o) %>%
+  #   head(50)
+
+  # Create large_o: top 50 largest entries
+  large_o <- data.frame(o = ortho_loading) %>%
+    arrange(desc(o)) %>%
+    head(50)
+
+  # Store the results in the respective lists
+  #small_results[[component]] <- small_o
+  large_results[[component]] <- large_o
+}
+
+# Loop through each component
+for (i in 1:5) {
+#   # Create and assign the data frame for small values with updated column name
+#   assign(paste0("small_o", i), {
+#     df <- data.frame(lipid = rownames(small_results[[i]]),
+#                      value = small_results[[i]]$o)
+#     colnames(df)[2] <- paste0("o", i)
+#     df
+#   })
+#   
+#   #Save the small data frame to a CSV file
+#   # write.csv(get(paste0("small_o", i)),
+#   #           file = paste0("oplsR_bmi","small_o", i, ".csv"),
+#   #           row.names = TRUE)
+#
+# Create and assign the data frame for large values with updated column name
+assign(paste0("large_o", i), {
+df <- data.frame(lipid = rownames(large_results[[i]]),
+                 value = large_results[[i]]$o)
+                 colnames(df)[2] <- paste0("o", i)
+df
+})
+
+#Save the large data frame to a CSV file
+#write.csv(get(paste0("large_o", i)),
+         #file = paste0("oplsR_bmi", "large_o", i, ".csv"),
+         #row.names = F)
+}
+
+
+names(large_o1)[names(large_o1) == 'o1'] <- 'o'
+names(large_o2)[names(large_o2) == 'o2'] <- 'o'
+names(large_o3)[names(large_o3) == 'o3'] <- 'o'
+names(large_o4)[names(large_o4) == 'o4'] <- 'o'
+names(large_o5)[names(large_o5) == 'o5'] <- 'o'
+
+orthoLoadingsCombined <- rbind(large_o1, large_o2, large_o3, large_o4, large_o5) 
+
+orthoLoadingsCombined <- orthoLoadingsCombined %>% arrange(desc(o))
+
+#write.csv(orthoLoadingsCombined, file = "OPLSR_top50_OrthoLoadingsCombined_toBMI.csv", row.names = F)
+#rm(large_p1, large_o, large_o1, large_o2, large_o3, large_o4, large_o5, X, Y, df, large_results, ortho_loading, oplsR_bmi)
+rm(large_p1, large_results, X, Y, df, large_o1, large_o1, large_o2, large_o3, large_o4, large_o5, oplsR_bmi)
+```
+
+# Hierarchical (multi-level) modeling
+## 1. Separating each lipid class
+```{r}
+# Filter for "TAG"
+tag_lipids <- grep("TAG", lipidList, value = TRUE) #427
+
+# Filter for "DAG"
+dag_lipids <- grep("DAG", lipidList, value = TRUE) #48
+
+# Filter for "PI"
+pi_lipids <- grep("^PI", lipidList, value = TRUE) #35
+
+# Filter for "PC"
+pc_lipids <- grep("^PC", lipidList, value = TRUE) #75
+
+# Filter for "CE"
+ce_lipids <- grep("^CE", lipidList, value = TRUE) #31
+
+# Filter for "CER"
+cer_lipids <- grep("^CER", lipidList, value = TRUE) #11
+
+# Filter for "DCER"
+dcer_lipids <- grep("^DCER", lipidList, value = TRUE) #9
+
+# Filter for "FFA"
+ffa_lipids <- grep("^FFA", lipidList, value = TRUE) #20
+
+# Filter for "HCER"
+hcer_lipids <- grep("^HCER", lipidList, value = TRUE) #19
+
+# Filter for "LCER"
+lcer_lipids <- grep("^LCER", lipidList, value = TRUE) #10
+
+# Filter for "LPC"
+lpc_lipids <- grep("^LPC", lipidList, value = TRUE) #16
+
+# Filter for "LPE"
+lpe_lipids <- grep("^LPE", lipidList, value = TRUE) #15
+
+# Filter for "LPG"
+lpg_lipids <- grep("^LPG", lipidList, value = TRUE) #4
+
+# Filter for "LPI"
+lpi_lipids <- grep("^LPI", lipidList, value = TRUE) #8
+
+# Filter for "MAG"
+mag_lipids <- grep("^MAG", lipidList, value = TRUE) #11
+
+# Filter for "PE"
+pe_lipids <- grep("^PE", lipidList, value = TRUE) #113
+
+# Filter for "PG"
+pg_lipids <- grep("^PG", lipidList, value = TRUE) #23
+
+# Filter for "PS"
+ps_lipids <- grep("^PS", lipidList, value = TRUE) #22
+
+# Filter for "SM"
+sm_lipids <- grep("^SM", lipidList, value = TRUE) #9
+
+```
+
+
+## 2. PCA per lipid class
+```{r}
+pca_tag <- PCA(bussoCorrected[, tag_lipids], center = T, scale. = T)
+pca_dag <- PCA(bussoCorrected[, dag_lipids], center = T, scale. = T)
+pca_pi <- PCA(bussoCorrected[, pi_lipids], center = T, scale. = T)
+pca_pc <- PCA(bussoCorrected[, pc_lipids], center = T, scale. = T)
+pca_ce <- PCA(bussoCorrected[, ce_lipids], center = T, scale. = T)
+pca_cer <- PCA(bussoCorrected[, cer_lipids], center = T, scale. = T)
+pca_dcer <- PCA(bussoCorrected[, dcer_lipids], center = T, scale. = T)
+pca_ffa <- PCA(bussoCorrected[, ffa_lipids], center = T, scale. = T)
+pca_hcer <- PCA(bussoCorrected[, hcer_lipids], center = T, scale. = T)
+pca_lcer <- PCA(bussoCorrected[, lcer_lipids], center = T, scale. = T)
+pca_lpc <- PCA(bussoCorrected[, lpc_lipids], center = T, scale. = T)
+pca_lpe <- PCA(bussoCorrected[, lpe_lipids], center = T, scale. = T)
+pca_lpg <- PCA(bussoCorrected[, lpg_lipids], center = T, scale. = T) #only 4 ranks
+pca_lpi <- PCA(bussoCorrected[, lpi_lipids], center = T, scale. = T)
+pca_mag <- PCA(bussoCorrected[, mag_lipids], center = T, scale. = T)
+pca_pe <- PCA(bussoCorrected[, pe_lipids], center = T, scale. = T)
+pca_pg <- PCA(bussoCorrected[, pg_lipids], center = T, scale. = T)
+pca_ps <- PCA(bussoCorrected[, ps_lipids], center = T, scale. = T)
+pca_sm <- PCA(bussoCorrected[, sm_lipids], center = T, scale. = T)
+
+# NOTE: most PCAs only need 2 PCs as PC1 captured most of the variation in this instance so can reduce number of PCs to 2 if needed (04/10/2024)
+```
+
+
+
+## 3. Obtain each PC scores from each lipid's PCA
+```{r}
+scores_tag <- pca_tag$data$scores
+colnames(scores_tag) <- c("PC1_TAG", "PC2_TAG", "PC3_TAG", "PC4_TAG", "PC5_TAG")
+
+scores_dag <- pca_dag$data$scores
+colnames(scores_dag) <- c("PC1_DAG", "PC2_DAG", "PC3_DAG", "PC4_DAG", "PC5_DAG")
+
+scores_pi <- pca_pi$data$scores
+colnames(scores_pi) <- c("PC1_PI", "PC2_PI", "PC3_PI", "PC4_PI", "PC5_PI")
+
+scores_pc <- pca_pc$data$scores
+colnames(scores_pc) <- c("PC1_PC", "PC2_PC", "PC3_PC", "PC4_PC", "PC5_PC")
+
+scores_ce <- pca_ce$data$scores
+colnames(scores_ce) <- c("PC1_CE", "PC2_CE", "PC3_CE", "PC4_CE", "PC5_CE")
+
+scores_cer <- pca_cer$data$scores
+colnames(scores_cer) <- c("PC1_CER", "PC2_CER", "PC3_CER", "PC4_CER", "PC5_CER")
+
+scores_dcer <- pca_dcer$data$scores
+colnames(scores_dcer) <- c("PC1_DCER", "PC2_DCER", "PC3_DCER", "PC4_DCER", "PC5_DCER")
+
+scores_hcer <- pca_hcer$data$scores
+colnames(scores_hcer) <- c("PC1_HCER", "PC2_HCER", "PC3_HCER", "PC4_HCER", "PC5_HCER")
+
+scores_lcer <- pca_lcer$data$scores
+colnames(scores_lcer) <- c("PC1_LCER", "PC2_LCER", "PC3_LCER", "PC4_LCER", "PC5_LCER")
+
+scores_ffa <- pca_ffa$data$scores
+colnames(scores_ffa) <- c("PC1_FFA", "PC2_FFA", "PC3_FFA", "PC4_FFA", "PC5_FFA")
+
+scores_lpc <- pca_lpc$data$scores
+colnames(scores_lpc) <- c("PC1_LPC", "PC2_LPC", "PC3_LPC", "PC4_LPC", "PC5_LPC")
+
+scores_lpe <- pca_lpe$data$scores
+colnames(scores_lpe) <- c("PC1_LPE", "PC2_LPE", "PC3_LPE", "PC4_LPE", "PC5_LPE")
+
+scores_lpg <- pca_lpg$data$scores
+colnames(scores_lpg) <- c("PC1_LPG", "PC2_LPG", "PC3_LPG", "PC4_LPG")
+
+scores_lpi <- pca_lpi$data$scores
+colnames(scores_lpi) <- c("PC1_LPI", "PC2_LPI", "PC3_LPI", "PC4_LPI", "PC5_LPI")
+
+scores_pe <- pca_pe$data$scores
+colnames(scores_pe) <- c("PC1_PE", "PC2_PE", "PC3_PE", "PC4_PE", "PC5_PE")
+
+scores_pg <- pca_pg$data$scores
+colnames(scores_pg) <- c("PC1_PG", "PC2_PG", "PC3_PG", "PC4_PG", "PC5_PG")
+
+scores_ps <- pca_ps$data$scores
+colnames(scores_ps) <- c("PC1_PS", "PC2_PS", "PC3_PS", "PC4_PS", "PC5_PS")
+
+scores_sm <- pca_sm$data$scores
+colnames(scores_sm) <- c("PC1_SM", "PC2_SM", "PC3_SM", "PC4_SM", "PC5_SM")
+
+scores_mag <- pca_mag$data$scores
+colnames(scores_mag) <- c("PC1_MAG", "PC2_MAG", "PC3_MAG", "PC4_MAG", "PC5_MAG")
+
+pcaScoresCombined <- data.matrix(cbind(scores_tag, scores_dag, scores_pi, scores_pc, scores_ce, scores_cer, scores_dcer, scores_ffa, scores_hcer, scores_lcer, scores_lpc, scores_lpe, scores_lpg, scores_lpi, scores_mag, scores_pe, scores_pg, scores_ps, scores_sm))
+
+rm(pca_ce, pca_cer, pca_dag, pca_dcer, pca_ffa, pca_hcer, pca_lcer, pca_lpc, pca_lpe, pca_lpg, pca_lpi, pca_mag, pca_pc, pca_pe, pca_pg, pca_pi, pca_ps, pca_sm, pca_tag)
+
+rm(scores_tag, scores_dag, scores_pi, scores_pc, scores_ce, scores_cer, scores_dcer, scores_ffa, scores_hcer, scores_lcer, scores_lpc, scores_lpe, scores_lpg, scores_lpi, scores_mag, scores_pe, scores_pg, scores_ps, scores_sm)
+#write.csv(pcaScoresCombined, file = "PCA_scores_combined.csv")
+
+#plotScores(model = pca_tag, optns = list(ellipse = "hotellings", color = bussoCorrected$bmi, plotTitle = "PCA-TAG"))
+
+```
+
+
+
+## 4a. Hier PLS-R with bmi 
+```{r}
+X = pcaScoresCombined
+Y = bussoCorrected$bmi
+
+plsR_bmi = oplsda(X, Y, type = "PLS", optns = list(log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+# plotScores(model = plsR_bmi, optns = list(ellipse = "hotellings", color = bussoCorrected$bmi, plotTitle = "PLS-R to BMI"))
+```
+
+
+### examining Loadings
+```{r}
+plsR_bmi_loading <- data.frame(variable = row.names(plsR_bmi@loadingMN), loading = plsR_bmi@loadingMN)
+#write.csv(plsR_bmi_loading, file = "PLS_R_BMI_loading.csv")
+
+# For component p1
+loadings_p1_plsR <- data.frame(var = plsR_bmi_loading$variable, p1 = plsR_bmi_loading$loading.p1) # Loadings for the first component
+
+# Sort the variables by absolute loading value to find the most important
+important_vars_p1_plsR <- loadings_p1_plsR[order(abs(loadings_p1_plsR$p1), decreasing = TRUE), ] 
+#write.csv(important_vars_p1, file = "Hier_plsR_p1_loadings.csv")
+
+
+# For component p2
+loadings_p2_plsR <- data.frame(var = plsR_bmi_loading$variable, p2 = plsR_bmi_loading$loading.p2) # Loadings for the second component
+important_vars_p2 <- loadings_p2_plsR[order(abs(loadings_p2_plsR$p2), decreasing = TRUE), ] 
+#write.csv(important_vars_p2, file = "Hier_plsR_p2_loadings.csv")
+
+
+# For component p3
+loadings_p3_plsR <- data.frame(var = plsR_bmi_loading$variable, p3 = plsR_bmi_loading$loading.p3) # Loadings for the third component
+important_vars_p3 <- loadings_p3_plsR[order(abs(loadings_p3_plsR$p3), decreasing = TRUE), ] 
+#write.csv(important_vars_p3, file = "Hier_plsR_p3_loadings.csv")
+
+
+# For component p4
+loadings_p4_plsR <- data.frame(var = plsR_bmi_loading$variable, p4 = plsR_bmi_loading$loading.p4) # Loadings for the fourth component
+important_vars_p4 <- loadings_p4_plsR[order(abs(loadings_p4_plsR$p4), decreasing = TRUE), ] 
+#write.csv(important_vars_p4, file = "Hier_plsR_p4_loadings.csv")
+
+```
+
+
+
+## 4b. Hier OPLS-R with bmi 
+```{r}
+X = pcaScoresCombined
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+oplsR_bmi_loading <- data.frame(variable = row.names(oplsR_bmi@loadingMN), p1 = oplsR_bmi@loadingMN, o1 = oplsR_bmi@orthoLoadingMN[,1], o2 = oplsR_bmi@orthoLoadingMN[,2])
+
+#write.csv(oplsR_bmi_loading, file = "oplsR_BMI_loading.csv")
+```
+
+### examining loadings
+```{r}
+# For p1
+loadings_p1 <- data.frame(var = oplsR_bmi_loading$variable, p1 = oplsR_bmi_loading$p1) 
+
+# Sort the variables by absolute loading value to find the most important
+important_vars_p1_oplsR <- loadings_p1[order(abs(loadings_p1$p1), decreasing = TRUE), ] 
+#write.csv(important_vars_p1, file = "Hier_OplsR_p1_loadings.csv")
+
+
+# For o1
+loadings_o1 <- data.frame(var = oplsR_bmi_loading$variable, o1 = oplsR_bmi_loading$o1) 
+important_vars_o1 <- loadings_o1[order(abs(loadings_o1$o1), decreasing = TRUE), ] 
+#write.csv(important_vars_o1, file = "Hier_OplsR_o1_loadings.csv")
+
+
+# For o2
+loadings_o2 <- data.frame(var = oplsR_bmi_loading$variable, o2 = oplsR_bmi_loading$o2) 
+important_vars_o2 <- loadings_o2[order(abs(loadings_o2$o2), decreasing = TRUE), ] 
+#write.csv(important_vars_o2, file = "Hier_OplsR_o2_loadings.csv")
+```
+
+
+## 5. Venn diagram 
+```{r}
+library(VennDiagram)
+top50_oplsR <- loadings_p1[order(abs(loadings_p1$p1), decreasing = TRUE), ] %>% head(50)
+
+top50_plsR <- loadings_p1_plsR[order(abs(loadings_p1_plsR$p1), decreasing = TRUE), ] %>% head(50)
+
+set1 <- top50_plsR$var
+set2 <- top50_oplsR$var  
+
+# Calculate the intersection
+intersection <- intersect(set1, set2)
+
+set1_only <- setdiff(set1, set2)  # Variables in set1 but not in set2
+set2_only <- setdiff(set2, set1)  # Variablrs in set2 but not in set1
+```
+
+
+```{r}
+# Clear the plotting area
+grid.newpage()
+
+# Create Venn diagram
+venn.plot <- venn.diagram(
+  x = list(plsR = set1, oplsR = set2),
+  category.names = c("plsR", "oplsR"),
+  filename = NULL,  # To display in R
+  output = TRUE,
+  fill = c("red", "blue"),
+  alpha = 0.5,
+  cex = 1.5,  # Size of text
+  cat.cex = 1.5,  # Size of category text
+  main = "Venn Diagram",
+  main.cex = 2,  # Size of main title
+  cat.pos = c(0, 0),  # Position the category labels
+  cat.dist = c(0.05, 0.05),  # Distance of category labels from the circles
+  euler.d = TRUE,  # Use Euler's formula for better representation
+  disable.logging = TRUE
+  #sub = if(length(intersection) > 0) paste("Common Variables: ", paste(intersection, collapse = ", ")) else "No Common Variables"
+)
+
+grid.draw(venn.plot)
+
+# Add intersection variable names inside the intersection area
+if (length(intersection) > 0) {
+  # Split the names into two columns
+  mid_point <- ceiling(length(intersection) / 2)
+  col1 <- intersection[1:mid_point]
+  col2 <- intersection[(mid_point + 1):length(intersection)]
+  
+  # Format the text for two columns
+  text_col1 <- paste(col1, collapse = "\n")
+  text_col2 <- paste(col2, collapse = "\n")
+  
+  # Create a two-column layout
+  grid.text(label = text_col1, 
+            x = 0.35, y = 0.4,  # Adjust x for left column
+            gp = gpar(fontsize = 14, col = "black"),
+            just = "left")
+  
+  grid.text(label = text_col2, 
+            x = 0.55, y = 0.4,  # Adjust x for right column
+            gp = gpar(fontsize = 14, col = "black"),
+            just = "left")
+}
+
+```
+
+```{r}
+rm(plsR_bmi_loading, plsR_bmi, oplsR_bmi_loading, oplsR_bmi, important_vars_o1, important_vars_o2, important_vars_p1_oplsR, important_vars_p1_plsR, important_vars_p2, important_vars_p3, important_vars_p4, loadings_o1, loadings_o2, loadings_p1, loadings_p1_plsR, loadings_p2_plsR, loadings_p3_plsR, loadings_p4_plsR)
+```
+
+
+# RFECV
+
+Recursive-feature-elimination with cross-validation is a feature selection method. 
+
+I will evaluate and compare the lipid selected by this method with lipid selected by other methods and see if we could conduct feature selection and reduce dimension this way. For now the outcome of focus is bmi. 
+
+```{r}
+library(caret)
+library(glmnet)
+library(kernlab)
+library(e1071) # for SVM model
+library(randomForest) # for Random Forest model
+library(mlbench)
+```
+
+  ## split data train:test
+```{r}
+# Split the data into training and testing sets
+set.seed(123)
+dataset <- bussoCorrected[, -c(2:3)]
+trainIndex <- createDataPartition(y = dataset$bmi, p = .8, list = FALSE, times = 1)
+trainData <- dataset[trainIndex, ]
+testData <- dataset[-trainIndex, ]
+```
+
+
+## multi-model try3 (07/10/2024)
+selected features are stored to be compared later
+
+```{r}
+# Split the data into training and testing sets
+set.seed(123)
+dataset <- bussoCorrected[, -c(2:3)]
+trainIndex <- createDataPartition(y = dataset$bmi, p = .8, list = FALSE, times = 1)
+trainData <- dataset[trainIndex, ]
+testData <- dataset[-trainIndex, ]
+
+
+# Initialize an empty list to store results
+model_results <- list()
+
+# Function to store model results, including selected features
+store_results <- function(model_name, feature_size, train_metrics, test_metrics, selected_features) {
+  data.frame(
+    Model = rep(model_name, 2),  # Repeat for both Train and Test datasets
+    Features = rep(feature_size, 2),  # Repeat for both Train and Test datasets
+    Dataset = c("Train", "Test"),
+    RMSE = c(train_metrics["RMSE"], test_metrics["RMSE"]),
+    Rsquared = c(train_metrics["Rsquared"], test_metrics["Rsquared"]),
+    MAE = c(train_metrics["MAE"], test_metrics["MAE"]),
+    Selected_Features = I(rep(list(selected_features), 2))  # Repeat selected features for both Train and Test
+  )
+}
+
+
+
+# Define the models and RFE controls
+models_ctrl <- list(
+  lasso_regression = list(
+    rfe_ctrl = rfeControl(functions = lmFuncs, method = "cv", number = 10),
+    train_method = "glmnet",  # Lasso regression
+    tune_grid = expand.grid(alpha = 1, lambda = seq(0.001, 0.1, length = 10))
+  ),
+  ridge_regression = list(
+    rfe_ctrl = rfeControl(functions = lmFuncs, method = "cv", number = 10),
+    train_method = "glmnet",  # Ridge regression
+    tune_grid = expand.grid(alpha = 0, lambda = seq(0.001, 0.1, length = 10))
+  ),
+  elastic_net = list(
+    rfe_ctrl = rfeControl(functions = lmFuncs, method = "cv", number = 10),
+    train_method = "glmnet",  # Elastic Net
+    tune_grid = expand.grid(alpha = seq(0, 1, length = 10), lambda = seq(0.001, 0.1, length = 10))
+  ),
+  random_forest = list(
+    rfe_ctrl = rfeControl(functions = rfFuncs, method = "cv", number = 10),
+    train_method = "rf"  # Random forest
+  ),
+  svm_model = list(
+    rfe_ctrl = rfeControl(functions = caretFuncs, method = "cv", number = 10),
+    train_method = "svmRadial"  # SVM with radial kernel
+  )
+)
+
+# Iterate over each model in models_ctrl
+for (model_name in names(models_ctrl)) {
+  model_info <- models_ctrl[[model_name]]
+  rfe_ctrl <- model_info$rfe_ctrl
+  train_method <- model_info$train_method
+  tune_grid <- if (!is.null(model_info$tune_grid)) model_info$tune_grid else NULL
+
+  # Perform RFE
+  rfe_result <- tryCatch({
+    rfe(
+      x = trainData[, -1],         # Exclude the response variable
+      y = trainData$bmi,           # Response variable
+      sizes = c(10, 20, 50, 100),  # Number of features to evaluate
+      rfeControl = rfe_ctrl,
+      method = train_method,
+      tuneGrid = tune_grid
+    )
+  }, error = function(e) {
+    cat("Error in RFE for model", model_name, ":", e$message, "\n")
+    next
+  })
+
+  # Check if rfe_result is NULL
+  if (is.null(rfe_result)) {
+    cat("RFE result is NULL for model:", model_name, "\n")
+    next
+  }
+
+  best_size <- rfe_result[["optsize"]]
+  selected_features <- rfe_result$optVariables
+
+  # Train the model
+  model <- tryCatch({
+    train(
+      x = trainData[, selected_features, drop = FALSE],  # Ensure data matches selected features
+      y = trainData$bmi,
+      method = train_method,
+      tuneGrid = tune_grid
+    )
+  }, error = function(e) {
+    cat("Error in training model for", model_name, ":", e$message, "\n")
+    next
+  })
+
+  # Training performance
+  train_predictions <- predict(model, newdata = trainData[, selected_features, drop = FALSE])
+  train_performance <- postResample(train_predictions, trainData$bmi)
+
+  # Test performance
+  test_predictions <- predict(model, newdata = testData[, selected_features, drop = FALSE])
+  test_performance <- postResample(test_predictions, testData$bmi)
+
+  # Store results in a data frame, including selected features
+  model_results[[model_name]] <- store_results(model_name, best_size, train_performance, test_performance, selected_features)
+}
+
+# Combine all model results into one data frame
+final_results_df2<- do.call(rbind, model_results)
+
+# View the final data frame
+print(final_results_df2)
+
+# write.csv(final_results_df2, file="RFECV_Summary_results.csv", row.names = F)
+# 
+# write.csv(final_results_df2$Selected_Features[[1]], file="RFECV_Lasso_train_100.csv", row.names=F)
+# write.csv(final_results_df2$Selected_Features[[2]], file="RFECV_Lasso_test_100.csv", row.names=F)
+# 
+# write.csv(final_results_df2$Selected_Features[[3]], file="RFECV_Ridge_train_50.csv", row.names=F)
+# write.csv(final_results_df2$Selected_Features[[4]], file="RFECV_Ridge_test_50.csv", row.names=F)
+# 
+# write.csv(final_results_df2$Selected_Features[[5]], file="RFECV_ElasticNet_train_50.csv", row.names=F)
+# write.csv(final_results_df2$Selected_Features[[6]], file="RFECV_ElasticNet_test_50.csv", row.names=F)
+# 
+# write.csv(final_results_df2$Selected_Features[[7]], file="RFECV_RF_train_50.csv", row.names=F)
+# write.csv(final_results_df2$Selected_Features[[8]], file="RFECV_RF_test_50.csv", row.names=F)
+# 
+# write.csv(final_results_df2$Selected_Features[[9]], file="RFECV_SVM_train_893.csv", row.names=F)
+# write.csv(final_results_df2$Selected_Features[[10]], file="RFECV_SVM_test_893.csv", row.names=F)
+
+```
+
+
+## Venn diagram 
+only variables identified via test set  are considered here
+```{r}
+lasso100 <- final_results_df2$Selected_Features[[2]] 
+ridge50 <- final_results_df2$Selected_Features[[4]] 
+elastic50 <- final_results_df2$Selected_Features[[6]] 
+RF50 <- final_results_df2$Selected_Features[[8]] 
+SELECT <- significant_counts_df$Variable # final results from SELECT method way down below
+
+
+# SVM was excluded as they are all likely to be TAGs (SVM model used 893 lipids)
+
+set1 <- lasso100
+set2 <- ridge50
+set3 <- elastic50
+set4 <- RF50
+set5 <- SELECT
+
+# List common lipids 
+intersection_1_2 <- intersect(set1, set2) # Lasso and Ridge n = 31
+intersection_1_3 <- intersect(set1, set3) # Lasso and Elastic Net n = 26
+intersection_1_4 <- intersect(set1, set4) # Lasso and RF n = 4
+intersection_2_3 <- intersect(set2, set3) # Ridge and Elastic Net n = 16
+intersection_2_4 <- intersect(set2, set4) # Ridge and RF n = 1
+intersection_3_4 <- intersect(set3, set4) # Elastic Net and RF n = 5
+intersection_1_5 <- intersect(set1, set5) # Lasso and SELECT n = 5
+intersection_2_5 <- intersect(set2, set5) # Ridge and SELECT n = 4
+intersection_3_5 <- intersect(set3, set5) # Elastic Net and SELECT n = 0 
+intersection_4_5 <- intersect(set4, set5) # RF and SELECT n = 6
+
+intersection_1_2_3 <- intersect(intersection_1_2, set3) # 11 common lipids between lasso, ridge and elastic net
+intersection_1_2_4 <- intersect(intersection_1_2, set4) # NULL - no common lipid between lasso, ridge and RF
+intersection_1_3_4 <- intersect(intersection_1_3, set4) # 2 common lipids between lasso, elastic net and RF s
+intersection_2_3_4 <- intersect(intersection_2_3, set4) # 1 common lipid between ridge, elastic net and RF
+intersection_1_2_5 <- intersect(intersection_1_2, set5) # 1
+intersection_1_3_5 <- intersect(intersection_1_3, set5) # 0 
+intersection_1_4_5 <- intersect(intersection_1_4, set5) # 0 
+intersection_2_3_5 <- intersect(intersection_2_3, set5) # 0 
+intersection_2_4_5 <- intersect(intersection_2_4, set5) #0
+intersection_3_4_5 <- intersect(intersection_3_4, set5) #0
+
+intersection_1_2_3_4  <- intersect(intersection_1_2_3, set4) # NULL - no common lipid across all of them. 
+intersection_1_2_3_4_5  <- intersect(intersection_1_2_3_4, set5) # NULL 
+
+
+# write.csv(intersection_1_2, file = "Lasso_Ridge_commonlipids.csv", row.names=F)
+# write.csv(intersection_1_3, file = "Lasso_Elastic_commonlipids.csv", row.names=F)
+# write.csv(intersection_1_4, file = "Lasso_RF_commonlipids.csv", row.names=F)
+# write.csv(intersection_2_3, file = "Ridge_Elastic_commonlipids.csv", row.names=F)
+# write.csv(intersection_2_4, file = "Ridge_RF_commonlipids.csv", row.names=F)
+# write.csv(intersection_3_4, file = "Elastic_RF_commonlipids.csv", row.names=F)
+# write.csv(intersection_1_2_3, file = "Lasso_Ridge_Elastic_commonlipids.csv", row.names=F)
+# write.csv(intersection_1_3_4, file = "Lasso_Elastic_RF_commonlipids.csv", row.names=F)
+# write.csv(intersection_2_3_4, file = "Ridge_Elastic_RF_commonlipids.csv", row.names=F)
+write.csv(intersection_1_5, file = "Lasso_SELECT_commonlipids.csv", row.names=F)
+write.csv(intersection_2_5, file = "Ridge_SELECT_commonlipids.csv", row.names=F)
+write.csv(intersection_4_5, file = "RF_SELECT_commonlipids.csv", row.names=F)
+write.csv(intersection_1_2_5, file = "Lasso_Ridge_SELECT_commonlipids.csv", row.names=F)
+```
+
+
+```{r}
+library(VennDiagram)
+# Clear the plotting area
+grid.newpage()
+
+# Create Venn diagram
+venn.plot <- venn.diagram(
+  x = list(lasso = set1, ridge = set2, elasticnet = set3, RF = set4, SELECT = set5),
+  category.names = c("lasso", "ridge", "elasticnet", "RF", "SELECT"),
+  filename = NULL,  # To display in R
+  output = TRUE,
+  #fill = c("violet", "skyblue", "lightgreen", "purple3", "gold"),
+  fill = c("violetred3", "skyblue", "lightgreen", "mediumslateblue", "gold"),
+  alpha = 0.5,
+  cex = 1.5,  # Size of text
+  cat.cex = 1.5,  # Size of category text
+  main = "Venn Diagram",
+  main.cex = 2,  # Size of main title
+  cat.pos = c(0,0,0,0,0),  # Position the category labels
+  cat.dist = c(0.05, 0.05,0.05,0.05,0.05),  # Distance of category labels from the circles
+  euler.d = TRUE, disable.logging = TRUE # Use Euler's formula for better representation
+)
+
+grid.draw(venn.plot)
+
+
+# pathToPlot = "/Users/novia/Desktop/Diabetes_Obesity/Busselton/Lipids"
+# 
+# svglite::svglite(filename = file.path(pathToPlot,"VennDiag_5methods.svg"))
+# grid.draw(venn.plot)
+# dev.off()
+
+
+```
+
+```{r}
+# write.csv(final_results_df2$Selected_Features[[2]], file = "lasso_test_100lipids.csv",row.names=F)
+# write.csv(final_results_df2$Selected_Features[[4]], file = "ridge_test_50lipids.csv",row.names=F)
+# write.csv(final_results_df2$Selected_Features[[6]], file = "elastic_test_50lipids.csv",row.names=F)
+# write.csv(final_results_df2$Selected_Features[[8]], file = "rf_test_50lipids.csv",row.names=F)
+# write.csv(final_results_df2$Selected_Features[[10]], file = "svm_test_893lipids.csv",row.names=F)
+
+```
+
+```{r}
+rm(dataset, model, model_info, model_results, models_ctrl, rfe_ctrl, rfe_result, testData, trainData, venn.plot)
+
+```
+
+
+# SELECT threshold method
+##NOTE: Must do OPLS-R first and pick the most "influential" lipid to be correlated for SELECT
+
+```{r}
+# OPLS-R 
+set.seed(214)
+X = bussoCorrected[, -c(1:3)] # all lipids minus bmi column. 
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+# top of the list = TAG.52.2_FA16.1.
+# this lipid will be used in the first iteration. 
+```
+
+
+## Iteration1: TAG.52.2_FA16.1
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- bussoCorrected[, "TAG.52.2_FA16.1."]
+otherlipids <- bussoCorrected %>% select(-c("bmi","TAG.52.2_FA16.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 210
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "TAG.52.2_FA16.1_thres80_Oct2024.csv", row.names = TRUE)
+
+newMat <- otherlipids[, -high_corr_indices_80] # new Matrix excluding TAG.52.2_FA16.1. and all lipids that are highly correlated (> 0.80) with it. 
+
+#rm(toplipid, otherlipids, high_corr_vars_80, high_corr_indices_80, correlations, oplsR_bmi)
+```
+
+
+```{r}
+X = newMat # 684 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = TAG.54.6_FA16.0.
+# this lipid will be used in the second iteration. 
+```
+
+## Iteration2: TAG.54.6_FA16.0.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat[, "TAG.54.6_FA16.0."]
+otherlipids <- newMat %>% select(-c("TAG.54.6_FA16.0."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) 
+# 97
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "TAG.54.6_FA16.0_thres80_Oct2024.csv", row.names = TRUE)
+
+newMat2 <- otherlipids[, -high_corr_indices_80]
+#rm(newMat)
+```
+
+
+
+```{r}
+X = newMat2 # 586 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = DCER.20.1. 
+```
+
+
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat2[, "DCER.20.1."]
+otherlipids <- newMat2 %>% select(-c("DCER.20.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) 
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+DCER.20.1. - weak corr with others. 
+EH - if a top lipid is not correlated strongly (below threshold), it will be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with DCER.20.1 removed from the input matrix. 
+```{r}
+newMat3 <- newMat2 %>% select(-c("DCER.20.1."))
+
+X = newMat3 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = TAG.51.4_FA20.4.  
+```
+
+
+## Iteration3: TAG.51.4_FA20.4.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat3[, "TAG.51.4_FA20.4."]
+otherlipids <- newMat3 %>% select(-c("TAG.51.4_FA20.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 19
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "TAG.51.4_FA20.4_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat4 <- otherlipids[, -high_corr_indices_80]
+
+#rm(newMat, newMat2)
+```
+
+
+```{r}
+X = newMat4 # 566 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = TAG.54.8_FA20.4. 
+```
+
+## Iteration4:TAG.54.8_FA20.4.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat4[, "TAG.54.8_FA20.4."]
+otherlipids <- newMat4 %>% select(-c("TAG.54.8_FA20.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 9
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "TAG.54.8_FA20.4_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat5 <- otherlipids[, -high_corr_indices_80]
+
+#rm(newMat3, newMat4)
+```
+
+
+```{r}
+X = newMat5 # 555 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = TAG.42.1_FA18.1. 
+```
+
+## Iteration5:TAG.42.1_FA18.1.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat5[, "TAG.42.1_FA18.1."]
+otherlipids <- newMat5 %>% select(-c("TAG.42.1_FA18.1.")) #554
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #8
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "TAG.42.1_FA18.1_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat6 <- otherlipids[, -high_corr_indices_80]
+
+```
+
+
+```{r}
+X = newMat6 # 546 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = TAG.58.5_FA18.1. 
+```
+
+
+## Iteration6: TAG.58.5_FA18.1.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat6[, "TAG.58.5_FA18.1."]
+otherlipids <- newMat6 %>% select(-c("TAG.58.5_FA18.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 39
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "TAG.58.5_FA18.1_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat7 <- otherlipids[, -high_corr_indices_80]
+
+#rm(newMat5, newMat6)
+```
+
+```{r}
+X = newMat7 # 506 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = DCER.18.0. 
+```
+
+
+## Iteration7: DCER.18.0.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat7[, "DCER.18.0."]
+otherlipids <- newMat7 %>% select(-c("DCER.18.0."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 4
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "DCER.18.0_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat8 <- otherlipids[, -high_corr_indices_80]
+```
+
+```{r}
+X = newMat8 # 501 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PC.18.0_16.1. 
+```
+
+
+## Iteration8: PC.18.0_16.1. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat8[, "PC.18.0_16.1."]
+otherlipids <- newMat8 %>% select(-c("PC.18.0_16.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 3
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "PC.18.0_16.1_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat9 <- otherlipids[, -high_corr_indices_80]
+
+#rm(newMat7, newMat8)
+```
+
+
+```{r}
+X = newMat9 # 497 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = LPI.16.1.
+```
+
+
+## Iteration9: LPI.16.1. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat9[, "LPI.16.1."]
+otherlipids <- newMat9 %>% select(-c("LPI.16.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 3
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "LPI.16.1_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat10 <- otherlipids[, -high_corr_indices_80]
+
+```
+
+
+```{r}
+X = newMat10 # 493 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = DAG.16.0_18.0.  
+```
+
+
+## Iteration10: DAG.16.0_18.0.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat10[, "DAG.16.0_18.0."]
+otherlipids <- newMat10 %>% select(-c("DAG.16.0_18.0."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+DAG.16.0_18.0. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with DAG.16.0_18.0. removed from the input matrix. 
+```{r}
+newMat11 <- newMat10 %>% select(-c("DAG.16.0_18.0."))
+
+X = newMat11 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = TAG.58.7_FA20.4. 
+```
+
+
+## Iteration11: TAG.58.7_FA20.4. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat11[, "TAG.58.7_FA20.4."]
+otherlipids <- newMat11 %>% select(-c("TAG.58.7_FA20.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 7
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "TAG.58.7_FA20.4_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat12 <- otherlipids[, -high_corr_indices_80]
+
+#rm(newMat9, newMat10, newMat11)
+```
+
+
+```{r}
+X = newMat12 #484
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = HCER.18.1.
+```
+
+
+## Iteration12: HCER.18.1.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat12[, "HCER.18.1."]
+otherlipids <- newMat12 %>% select(-c("HCER.18.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+HCER.18.1. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with HCER.18.1. removed from the input matrix. 
+```{r}
+newMat13 <- newMat12 %>% select(-c("HCER.18.1."))
+
+X = newMat13 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PC.18.0_18.3.  
+```
+
+
+## Iteration13: PC.18.0_18.3.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat13[, "PC.18.0_18.3."]
+otherlipids <- newMat13 %>% select(-c("PC.18.0_18.3."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+PC.18.0_18.3. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with PC.18.0_18.3. removed from the input matrix. 
+```{r}
+newMat14 <- newMat13 %>% select(-c("PC.18.0_18.3."))
+
+X = newMat14 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PC.18.0_20.3.  
+```
+
+
+## Iteration14: PC.18.0_20.3. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat14[, "PC.18.0_20.3."]
+otherlipids <- newMat14 %>% select(-c("PC.18.0_20.3."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 13
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "PC.18.0_20.3_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat15 <- otherlipids[, -high_corr_indices_80]
+
+#rm(newMat12, newMat13, newMat14)
+```
+
+
+```{r}
+X = newMat15 # 468 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.16.0_16.1.   
+```
+
+
+## Iteration15: PE.16.0_16.1.  
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat15[, "PE.16.0_16.1."]
+otherlipids <- newMat15 %>% select(-c("PE.16.0_16.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 13
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "PE.16.0_16.1_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat16 <- otherlipids[, -high_corr_indices_80]
+
+```
+
+
+```{r}
+X = newMat16 # 454 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = TAG.48.5_FA18.3. 
+```
+
+
+## Iteration16: TAG.48.5_FA18.3. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat16[, "TAG.48.5_FA18.3."]
+otherlipids <- newMat16 %>% select(-c("TAG.48.5_FA18.3."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 9
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "TAG.48.5_FA18.3_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat17 <- otherlipids[, -high_corr_indices_80]
+
+#rm(newMat15, newMat16)
+```
+
+
+```{r}
+X = newMat17 # 444 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.18.0_18.1.
+```
+
+
+## Iteration17: PE.18.0_18.1. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat17[, "PE.18.0_18.1."]
+otherlipids <- newMat17 %>% select(-c("PE.18.0_18.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 6
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "PE.18.0_18.1_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat18 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat18 # 437 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = DAG.16.1_22.6.
+```
+
+
+## Iteration18: DAG.16.1_22.6. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat18[, "DAG.16.1_22.6."]
+otherlipids <- newMat18 %>% select(-c("DAG.16.1_22.6."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 9
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "DAG.16.1_22.6_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat19 <- otherlipids[, -high_corr_indices_80]
+
+#rm(newMat17,newMat18)
+```
+
+
+```{r}
+X = newMat19 # 427 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = CER.22.1.
+```
+
+
+## Iteration19: CER.22.1. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat19[, "CER.22.1."]
+otherlipids <- newMat19 %>% select(-c("CER.22.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 4
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "CER.22.1_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat20 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat20 # 422 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PG.18.0_18.1.
+```
+
+
+## Iteration20: PG.18.0_18.1. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat20[, "PG.18.0_18.1."]
+otherlipids <- newMat20 %>% select(-c("PG.18.0_18.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 1
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "PG.18.0_18.1_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat21 <- otherlipids[, -high_corr_indices_80]
+
+#rm(newMat19, newMat20)
+```
+
+
+```{r}
+X = newMat21 # 420 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = TAG.56.6_FA20.5.
+```
+
+
+## Iteration21: TAG.56.6_FA20.5. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat21[, "TAG.56.6_FA20.5."]
+otherlipids <- newMat21 %>% select(-c("TAG.56.6_FA20.5."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #4
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "TAG.56.6_FA20.5_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat22 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat22 # 415 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PS.18.0_20.0.
+```
+
+
+## Iteration22: PS.18.0_20.0. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat22[, "PS.18.0_20.0."]
+otherlipids <- newMat22 %>% select(-c("PS.18.0_20.0."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+PS.18.0_20.0. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with PS.18.0_20.0. removed from the input matrix. 
+```{r}
+newMat23 <- newMat22 %>% select(-c("PS.18.0_20.0."))
+
+X = newMat23 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = MAG.16.1.   
+```
+
+
+## Iteration23: MAG.16.1.  
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat23[, "MAG.16.1."]
+otherlipids <- newMat23 %>% select(-c("MAG.16.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) # 0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+MAG.16.1. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with MAG.16.1. removed from the input matrix. 
+```{r}
+newMat24 <- newMat23 %>% select(-c("MAG.16.1."))
+
+X = newMat24 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = DAG.18.2_22.4.
+```
+
+
+## Iteration24: DAG.18.2_22.4.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat24[, "DAG.18.2_22.4."]
+otherlipids <- newMat24 %>% select(-c("DAG.18.2_22.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #2
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+#write.csv(high_corr_vars_80, file = "DAG.18.2_22.4_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat25 <- otherlipids[, -high_corr_indices_80]
+
+#rm(newMat21, newMat22, newMat23, newMat24)
+```
+
+
+```{r}
+X = newMat25 # 410 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PI.16.0_18.3. 
+```
+
+
+## Iteration25: PI.16.0_18.3.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat25[, "PI.16.0_18.3."]
+otherlipids <- newMat25 %>% select(-c("PI.16.0_18.3."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #3
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PI.16.0_18.3_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat26 <- otherlipids[, -high_corr_indices_80]
+
+```
+
+
+```{r}
+X = newMat26 # 406 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = TAG.51.3_FA18.2.
+```
+
+
+## Iteration26: TAG.51.3_FA18.2.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat26[, "TAG.51.3_FA18.2."]
+otherlipids <- newMat26 %>% select(-c("TAG.51.3_FA18.2."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #21
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "TAG.51.3_FA18.2_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat27 <- otherlipids[, -high_corr_indices_80]
+
+rm(newMat25, newMat26)
+```
+
+
+```{r}
+X = newMat27 # 384 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PS.20.0_20.3. 
+```
+
+
+## Iteration27: PS.20.0_20.3.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat27[, "PS.20.0_20.3."]
+otherlipids <- newMat27 %>% select(-c("PS.20.0_20.3."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+PS.20.0_20.3. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with PS.20.0_20.3. removed from the input matrix. 
+```{r}
+newMat28 <- newMat27 %>% select(-c("PS.20.0_20.3."))
+
+X = newMat28 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = LPI.20.3.
+```
+
+
+## Iteration28: LPI.20.3.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat28[, "LPI.20.3."]
+otherlipids <- newMat28 %>% select(-c("LPI.20.3."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #3
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "LPI.20.3_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat29 <- otherlipids[, -high_corr_indices_80]
+
+rm(newMat27, newMat28)
+```
+
+
+```{r}
+X = newMat29 # 379 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PC.14.0_22.4.
+```
+
+## Iteration29: PC.14.0_22.4.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat29[, "PC.14.0_22.4."]
+otherlipids <- newMat29 %>% select(-c("PC.14.0_22.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #3
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PC.14.0_22.4_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat30 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat30 # 375 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = DAG.18.1_22.5.
+```
+
+
+## Iteration30: DAG.18.1_22.5.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat30[, "DAG.18.1_22.5."]
+otherlipids <- newMat30 %>% select(-c("DAG.18.1_22.5."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #1
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "DAG.18.1_22.5_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat31 <- otherlipids[, -high_corr_indices_80]
+
+rm(newMat29, newMat30)
+```
+
+
+```{r}
+X = newMat31 # 373 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = MAG.18.1. 
+```
+
+## Iteration31: MAG.18.1. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat31[, "MAG.18.1."]
+otherlipids <- newMat31 %>% select(-c("MAG.18.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #1
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "MAG.18.1_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat32 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat32 # 371 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = CE.18.0.   
+```
+
+
+## Iteration31: CE.18.0.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat32[, "CE.18.0."]
+otherlipids <- newMat32 %>% select(-c("CE.18.0."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+CE.18.0. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with CE.18.0. removed from the input matrix. 
+```{r}
+newMat33 <- newMat32 %>% select(-c("CE.18.0.")) #370 lipids 
+
+X = newMat33 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PS.20.0_16.1.
+```
+
+
+## Iteration33: PS.20.0_16.1.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat33[, "PS.20.0_16.1."]
+otherlipids <- newMat33 %>% select(-c("PS.20.0_16.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+PS.20.0_16.1. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with PS.20.0_16.1.removed from the input matrix. 
+```{r}
+newMat34 <- newMat33 %>% select(-c("PS.20.0_16.1.")) #369 lipids 
+
+X = newMat34 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = TAG.56.3_FA20.0.
+
+rm(newMat31, newMat32, newMat33)
+```
+
+
+## Iteration34: TAG.56.3_FA20.0.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat34[, "TAG.56.3_FA20.0."]
+otherlipids <- newMat34 %>% select(-c("TAG.56.3_FA20.0."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #2
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "TAG.56.3_FA20.0_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat35 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat35 # 366 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = DCER.22.1.  
+```
+
+## Iteration35: DCER.22.1. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat35[, "DCER.22.1."]
+otherlipids <- newMat35 %>% select(-c("DCER.22.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+DCER.22.1. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with DCER.22.1. removed from the input matrix. 
+```{r}
+newMat36 <- newMat35 %>% select(-c("DCER.22.1.")) #365 lipids 
+
+X = newMat36 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.18.0_20.4.
+
+rm(newMat34, newMat35)
+```
+
+
+## Iteration36: PE.18.0_20.4. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat36[, "PE.18.0_20.4."]
+otherlipids <- newMat36 %>% select(-c("PE.18.0_20.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #1
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PE.18.0_20.4_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat37 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat37 # 363 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = CE.16.1. 
+```
+
+
+## Iteration37: CE.16.1.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat37[, "CE.16.1."]
+otherlipids <- newMat37 %>% select(-c("CE.16.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+CE.16.1. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with CE.16.1. removed from the input matrix. 
+```{r}
+newMat38 <- newMat37 %>% select(-c("CE.16.1.")) #362 lipids 
+
+X = newMat38 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = CE.18.3. 
+
+rm(newMat36, newMat37)
+```
+
+
+## Iteration38: CE.18.3.  
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat38[, "CE.18.3."]
+otherlipids <- newMat38 %>% select(-c("CE.18.3."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+CE.18.3. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with CE.18.3. removed from the input matrix. 
+```{r}
+newMat39 <- newMat38 %>% select(-c("CE.18.3.")) #362 lipids 
+
+X = newMat39 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = CE.18.3. 
+```
+
+
+## Iteration39: LPE.22.4.  
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat39[, "LPE.22.4."]
+otherlipids <- newMat39 %>% select(-c("LPE.22.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #2
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "LPE.22.4_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat40 <- otherlipids[, -high_corr_indices_80]
+
+rm(newMat38, newMat39)
+```
+
+
+```{r}
+X = newMat40 # 358 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.18.0_22.6.
+```
+
+
+## Iteration40: PE.18.0_22.6.  
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat40[, "PE.18.0_22.6."]
+otherlipids <- newMat40 %>% select(-c("PE.18.0_22.6."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #4
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PE.18.0_22.6_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat41 <- otherlipids[, -high_corr_indices_80]
+
+```
+
+
+```{r}
+X = newMat41 # 353 lipids remaining
+Y = bussoCorrected$bmi 
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.16.0_20.1. 
+```
+
+
+## Iteration41: PE.16.0_20.1.  
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat41[, "PE.16.0_20.1."]
+otherlipids <- newMat41 %>% select(-c("PE.16.0_20.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+PE.16.0_20.1.  - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with PE.16.0_20.1.  removed from the input matrix. 
+```{r}
+newMat42 <- newMat41 %>% select(-c("PE.16.0_20.1.")) #352 lipids 
+
+X = newMat42 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = DAG.18.2_18.3.
+
+rm(newMat40, newMat41)
+```
+
+
+## Iteration42: DAG.18.2_18.3. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat42[, "DAG.18.2_18.3."]
+otherlipids <- newMat42 %>% select(-c("DAG.18.2_18.3."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #6
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "DAG.18.2_18.3_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat43 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat43 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = TAG.56.5_FA22.5. 
+```
+
+
+## Iteration43: TAG.56.5_FA22.5. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat43[, "TAG.56.5_FA22.5."]
+otherlipids <- newMat43 %>% select(-c("TAG.56.5_FA22.5."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #6
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+TAG.56.5_FA22.5.  - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with TAG.56.5_FA22.5.  removed from the input matrix. 
+```{r}
+newMat44 <- newMat43 %>% select(-c("TAG.56.5_FA22.5.")) 
+
+X = newMat44 # 344 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PI.16.0_16.0.
+
+rm(newMat42, newMat43)
+```
+
+
+## Iteration44: PI.16.0_16.0.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat44[, "PI.16.0_16.0."]
+otherlipids <- newMat44 %>% select(-c("PI.16.0_16.0."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #3
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PI.16.0_16.0_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat45 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat45 # 340 lipids remaining 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = LPG.16.0. 
+```
+
+
+## Iteration45: LPG.16.0. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat45[, "LPG.16.0."]
+otherlipids <- newMat45 %>% select(-c("LPG.16.0."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #3
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+LPG.16.0. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with LPG.16.0. removed from the input matrix. 
+```{r}
+newMat46 <- newMat45 %>% select(-c("LPG.16.0.")) 
+
+X = newMat46 # 339 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.18.1_22.4.
+
+rm(newMat44, newMat45)
+```
+
+
+## Iteration45: PE.18.1_22.4.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat46[, "PE.18.1_22.4."]
+otherlipids <- newMat46 %>% select(-c("PE.18.1_22.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #1
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PE.18.1_22.4_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat47 <- otherlipids[, -high_corr_indices_80]
+
+rm(newMat44, newMat45, newMat46)
+```
+
+
+```{r}
+X = newMat47 #337 lipids remaining 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = CE.20.4.
+```
+
+
+## Iteration47: CE.20.4.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat47[, "CE.20.4."]
+otherlipids <- newMat47 %>% select(-c("CE.20.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+CE.20.4. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with CE.20.4. removed from the input matrix. 
+```{r}
+newMat48 <- newMat47 %>% select(-c("CE.20.4.")) 
+
+X = newMat48 # 336 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = MAG.20.4. 
+```
+
+
+## Iteration48: MAG.20.4. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat48[, "MAG.20.4."]
+otherlipids <- newMat48 %>% select(-c("MAG.20.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+MAG.20.4. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with MAG.20.4. removed from the input matrix. 
+```{r}
+newMat49 <- newMat48 %>% select(-c("MAG.20.4.")) 
+
+X = newMat49 # 335 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = MAG.18.3.
+
+rm(newMat47, newMat48)
+```
+
+
+## Iteration49: MAG.18.3.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat49[, "MAG.18.3."]
+otherlipids <- newMat49 %>% select(-c("MAG.18.3."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+MAG.18.3. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with MAG.18.3. removed from the input matrix. 
+```{r}
+newMat50 <- newMat49 %>% select(-c("MAG.18.3.")) 
+
+X = newMat50 # 334 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PC.16.0_14.0. 
+```
+
+
+## Iteration50: PC.16.0_14.0.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat50[, "PC.16.0_14.0."]
+otherlipids <- newMat50 %>% select(-c("PC.16.0_14.0."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #4
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PC.16.0_14.0_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat51 <- otherlipids[, -high_corr_indices_80]
+
+rm(newMat49, newMat50)
+```
+
+
+```{r}
+X = newMat51 #329 lipids remaining 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PI.18.0_22.4. 
+```
+
+
+## Iteration51: PI.18.0_22.4. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat51[, "PI.18.0_22.4."]
+otherlipids <- newMat51 %>% select(-c("PI.18.0_22.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #3
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PI.18.0_22.4_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat52 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat52 #325 lipids remaining 
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PG.18.1_20.2.
+```
+
+
+## Iteration52: PG.18.1_20.2. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat52[, "PG.18.1_20.2."]
+otherlipids <- newMat52 %>% select(-c("PG.18.1_20.2."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+PG.18.1_20.2. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with PG.18.1_20.2.removed from the input matrix. 
+```{r}
+newMat53 <- newMat52 %>% select(-c("PG.18.1_20.2.")) 
+
+X = newMat53 # 324 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = TAG.58.8_FA18.1.
+```
+
+
+## Iteration53: TAG.58.8_FA18.1.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat53[, "TAG.58.8_FA18.1."]
+otherlipids <- newMat53 %>% select(-c("TAG.58.8_FA18.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #9
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "TAG.58.8_FA18.1_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat54 <- otherlipids[, -high_corr_indices_80]
+
+rm(newMat51, newMat52, newMat53)
+```
+
+
+```{r}
+X = newMat54 # 314 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PC.16.0_20.4. 
+```
+
+
+## Iteration54: PC.16.0_20.4.  
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat54[, "PC.16.0_20.4."]
+otherlipids <- newMat54 %>% select(-c("PC.16.0_20.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #5
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PC.16.0_20.4_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat55 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat55 # 308 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = HCER.20.1. 
+```
+
+
+## Iteration55: HCER.20.1. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat55[, "HCER.20.1."]
+otherlipids <- newMat55 %>% select(-c("HCER.20.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+HCER.20.1. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with HCER.20.1. removed from the input matrix. 
+```{r}
+newMat56 <- newMat55 %>% select(-c("HCER.20.1.")) 
+
+X = newMat56 # 307 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = FFA.22.4.  
+
+rm(newMat54, newMat55)
+```
+
+
+## Iteration56: FFA.22.4. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat56[, "FFA.22.4."]
+otherlipids <- newMat56 %>% select(-c("FFA.22.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #7
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "FFA.22.4_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat57 <- otherlipids[, -high_corr_indices_80]
+
+rm(newMat54, newMat55, newMat56)
+```
+
+
+```{r}
+X = newMat57 # 299 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.P.18.0_16.1.
+```
+
+
+## Iteration57: PE.P.18.0_16.1.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat57[, "PE.P.18.0_16.1."]
+otherlipids <- newMat57 %>% select(-c("PE.P.18.0_16.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #3
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PE.P.18.0_16.1_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat58 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat58 # 295 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.P.16.0_20.4.
+```
+
+
+## Iteration58: PE.P.16.0_20.4.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat58[, "PE.P.16.0_20.4."]
+otherlipids <- newMat58 %>% select(-c("PE.P.16.0_20.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #9
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PE.P.16.0_20.4_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat59 <- otherlipids[, -high_corr_indices_80]
+
+rm(newMat57, newMat58)
+```
+
+
+```{r}
+X = newMat59 # 285 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = LPG.18.0. 
+```
+
+
+## Iteration59: LPG.18.0.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat59[, "LPG.18.0."]
+otherlipids <- newMat59 %>% select(-c("LPG.18.0."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #1
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "LPG.18.0_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat60 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat60 # 283 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = SM.18.1. 
+```
+
+
+## Iteration60: SM.18.1.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat60[, "SM.18.1."]
+otherlipids <- newMat60 %>% select(-c("SM.18.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #8
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "SM.18.1_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat61 <- otherlipids[, -high_corr_indices_80]
+
+rm(newMat59, newMat60)
+```
+
+
+```{r}
+X = newMat61 # 274 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.18.0_20.5. 
+```
+
+
+## Iteration61: PE.18.0_20.5. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat61[, "PE.18.0_20.5."]
+otherlipids <- newMat61 %>% select(-c("PE.18.0_20.5."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #2
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PE.18.0_20.5_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat62 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat62 # 271 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = CE.22.4. 
+```
+
+
+## Iteration62: CE.22.4.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat62[, "CE.22.4."]
+otherlipids <- newMat62 %>% select(-c("CE.22.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #2
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "CE.22.4_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat63 <- otherlipids[, -high_corr_indices_80]
+
+rm(newMat61, newMat62)
+```
+
+
+```{r}
+X = newMat63 # 268 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = TAG.58.10_FA22.5.  
+```
+
+
+## Iteration63: TAG.58.10_FA22.5.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat63[, "TAG.58.10_FA22.5."]
+otherlipids <- newMat63 %>% select(-c("TAG.58.10_FA22.5."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #2
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "TAG.58.10_FA22.5_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat64 <- otherlipids[, -high_corr_indices_80]
+```
+
+
+```{r}
+X = newMat64 # 265 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.P.16.0_20.3.  
+```
+
+
+## Iteration64: PE.P.16.0_20.3.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat64[, "PE.P.16.0_20.3."]
+otherlipids <- newMat64 %>% select(-c("PE.P.16.0_20.3."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #10
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PE.P.16.0_20.3_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat65 <- otherlipids[, -high_corr_indices_80]
+
+rm(newMat63, newMat64)
+```
+
+
+```{r}
+X = newMat65 # 254 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PG.18.1_22.4. 
+```
+
+
+## Iteration65: PG.18.1_22.4.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat65[, "PG.18.1_22.4."]
+otherlipids <- newMat65 %>% select(-c("PG.18.1_22.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+PG.18.1_22.4. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with PG.18.1_22.4. removed from the input matrix. 
+```{r}
+newMat66 <- newMat65 %>% select(-c("PG.18.1_22.4.")) 
+
+X = newMat66 # 253 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = CE.20.0.  
+```
+
+
+## Iteration66: CE.20.0.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat66[, "CE.20.0."]
+otherlipids <- newMat66 %>% select(-c("CE.20.0."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+CE.20.0. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with CE.20.0. removed from the input matrix. 
+```{r}
+newMat67 <- newMat66 %>% select(-c("CE.20.0.")) 
+
+X = newMat67 # 252 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = MAG.20.3.   
+```
+
+
+## Iteration67: MAG.20.3.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat67[, "MAG.20.3."]
+otherlipids <- newMat67 %>% select(-c("MAG.20.3."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+MAG.20.3. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with MAG.20.3. removed from the input matrix. 
+```{r}
+newMat68 <- newMat67 %>% select(-c("MAG.20.3.")) 
+
+X = newMat68 # 251 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = HCER.d18.0_26.1.   
+
+rm(newMat65, newMat66, newMat67)
+```
+
+
+## Iteration68: HCER.d18.0_26.1.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat68[, "HCER.d18.0_26.1."]
+otherlipids <- newMat68 %>% select(-c("HCER.d18.0_26.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+HCER.d18.0_26.1. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with HCER.d18.0_26.1. removed from the input matrix. 
+```{r}
+newMat69 <- newMat68 %>% select(-c("HCER.d18.0_26.1.")) 
+
+X = newMat69 # 250 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.P.16.0_18.0.  
+```
+
+
+## Iteration69: PE.P.16.0_18.0.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat69[, "PE.P.16.0_18.0."]
+otherlipids <- newMat69 %>% select(-c("PE.P.16.0_18.0."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+PE.P.16.0_18.0.  - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with PE.P.16.0_18.0.  removed from the input matrix. 
+```{r}
+newMat70 <- newMat69 %>% select(-c("PE.P.16.0_18.0.")) 
+
+X = newMat70 # 249 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = MAG.22.4.  
+```
+
+
+## Iteration70: MAG.22.4.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat70[, "MAG.22.4."]
+otherlipids <- newMat70 %>% select(-c("MAG.22.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+MAG.22.4.  - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with MAG.22.4.removed from the input matrix. 
+```{r}
+newMat71 <- newMat70 %>% select(-c("MAG.22.4.")) 
+
+X = newMat71 # 248 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.18.2_20.3.  
+```
+
+
+## Iteration71: PE.18.2_20.3.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat71[, "PE.18.2_20.3."]
+otherlipids <- newMat71 %>% select(-c("PE.18.2_20.3."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #3
+
+# Put lipid names as variable names
+variable_names <- colnames(correlations) 
+high_corr_vars_80 <- data.frame(lipids = variable_names[high_corr_indices_80], cor = correlations[high_corr_indices_80])
+
+write.csv(high_corr_vars_80, file = "PE.18.2_20.3_thres80_Nov2024.csv", row.names = TRUE)
+
+newMat72 <- otherlipids[, -high_corr_indices_80]
+
+rm(newMat68, newMat69, newMat70, newMat71)
+```
+
+
+```{r}
+X = newMat72 # 244 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = LPI.20.2.
+```
+
+
+## Iteration72: LPI.20.2.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat72[, "LPI.20.2."]
+otherlipids <- newMat72 %>% select(-c("LPI.20.2."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+LPI.20.2.  - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with LPI.20.2.  removed from the input matrix. 
+```{r}
+newMat73 <- newMat72 %>% select(-c("LPI.20.2.")) 
+
+X = newMat73 # 243 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PG.16.0_18.2.
+```
+
+
+## Iteration73: PG.16.0_18.2.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat73[, "PG.16.0_18.2."]
+otherlipids <- newMat73 %>% select(-c("PG.16.0_18.2."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+PG.16.0_18.2. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with PG.16.0_18.2. removed from the input matrix. 
+```{r}
+newMat74 <- newMat73 %>% select(-c("PG.16.0_18.2.")) 
+
+X = newMat74 # 242 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.O.16.0_16.1.
+```
+
+
+## Iteration74: PE.O.16.0_16.1.
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat74[, "PE.O.16.0_16.1."]
+otherlipids <- newMat74 %>% select(-c("PE.O.16.0_16.1."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+PE.O.16.0_16.1. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with PE.O.16.0_16.1. removed from the input matrix. 
+```{r}
+newMat75 <- newMat74 %>% select(-c("PE.O.16.0_16.1.")) 
+
+X = newMat75 # 241 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PE.18.0_16.0. 
+```
+
+
+## Iteration75: PE.18.0_16.0. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat75[, "PE.18.0_16.0."]
+otherlipids <- newMat75 %>% select(-c("PE.18.0_16.0."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+PE.18.0_16.0. - weak corr with others - to be removed from the next iteration's input matrix and OPLS-R will be re-run and for that iteration the next highest loading will be picked.
+Redoing the iteration with PE.18.0_16.0. removed from the input matrix. 
+```{r}
+newMat76 <- newMat75 %>% select(-c("PE.18.0_16.0.")) 
+
+X = newMat76 # 240 lipids remaining
+Y = bussoCorrected$bmi
+
+oplsR_bmi = oplsda(X, Y, type = "OPLS", optns = list(predI=1, orthoI=5, log10LLogical=FALSE, scaleCDefault = "none", subetDefault=NULL, crossvalNumber=7))
+
+data.frame(p1 = oplsR_bmi@loadingMN) %>%
+    arrange(desc(p1)) %>%
+    head(25)
+
+# top of the list = PG.16.0_20.4. 
+
+rm(newMat72, newMat73, newMat74, newMat75)
+```
+
+
+## Iteration76: PG.16.0_20.4.  -- Iteration stops here. 
+```{r}
+# Define a vector of correlations, if only want to see how a particular lipid correlates with others.
+toplipid <- newMat76[, "PG.16.0_20.4."]
+otherlipids <- newMat76 %>% select(-c("PG.16.0_20.4."))
+
+correlations <- cor(toplipid, otherlipids)
+
+# Apply r = 0.80 cut off
+threshold <- 0.80
+high_corr_indices_80 <- which(correlations > abs(threshold)) #0
+
+# 0 - none of the correlation is higher than 0.80. 
+```
+
+
+
+## Regression based on SELECT parameters
+
+```{r}
+top_lipids <- c("TAG.52.2_FA16.1.","TAG.54.6_FA16.0.","DCER.20.1.","TAG.51.4_FA20.4.","TAG.54.8_FA20.4.",
+              "TAG.42.1_FA18.1.","TAG.58.5_FA18.1.","DCER.18.0.","PC.18.0_16.1.","LPI.16.1.","DAG.16.0_18.0.",
+              "TAG.58.7_FA20.4.","HCER.18.1.","PC.18.0_18.3.","PC.18.0_20.3.","PE.16.0_16.1.","TAG.48.5_FA18.3.", 
+              "PE.18.0_18.1.","DAG.16.1_22.6.","CER.22.1.","PG.18.0_18.1.","TAG.56.6_FA20.5.","PS.18.0_20.0.", 
+              "MAG.16.1.", "DAG.18.2_22.4.","PI.16.0_18.3.", "TAG.51.3_FA18.2.","PS.20.0_20.3.", "LPI.20.3.",
+              "PC.14.0_22.4.","DAG.18.1_22.5.","PI.16.0_18.3.", "MAG.18.1.", "CE.18.0.","PS.20.0_16.1.",
+              "TAG.56.3_FA20.0.","DCER.22.1.","PE.18.0_20.4.", "CE.16.1.", "CE.18.3.", "LPE.22.4.", "PE.18.0_22.6.",
+              "PE.16.0_20.1.", "DAG.18.2_18.3.","TAG.56.5_FA22.5.","PI.16.0_16.0.","LPG.16.0.", "PE.18.1_22.4.",
+              "CE.20.4.","MAG.20.4.", "MAG.18.3.","PC.16.0_14.0.", "PI.18.0_22.4.", "PG.18.1_20.2.",
+              "TAG.58.8_FA18.1.","PC.16.0_20.4.","HCER.20.1.","FFA.22.4.","PE.P.18.0_16.1.","PE.P.16.0_20.4.",
+              "LPG.18.0.","SM.18.1.","PE.18.0_20.5.","CE.22.4.","TAG.58.10_FA22.5.", "PE.P.16.0_20.3.", 
+              "PG.18.1_22.4.", "CE.20.0.","MAG.20.3.","HCER.d18.0_26.1.", "PE.P.16.0_18.0.", "MAG.22.4.",
+              "PE.18.2_20.3.", "LPI.20.2.","PG.16.0_18.2.","PE.O.16.0_16.1.","PE.18.0_16.0.", "PG.16.0_20.4.")
+```
+
+
+```{r}
+# Initialize an empty list to store results
+results <- list()
+adj_r_squared_results <- data.frame(Model = integer(), Variables = character(), Adj_R_Squared = numeric())
+significant_vars_results <- data.frame(Model = integer(), Variable = character(), P_Value = numeric())
+significant_counts <- setNames(rep(0, length(top_lipids)), top_lipids)  # Initialize count for each variable in top_lipids
+
+# Loop through each variable in top_lipids
+for (i in seq_along(top_lipids)) {
+  # Subset the variables up to the ith element
+  formula_vars <- paste(top_lipids[1:i], collapse = " + ")
+  
+  # Create the formula for lm, assuming y is the dependent variable
+  formula <- as.formula(paste("bmi ~", formula_vars))
+  
+  # Fit the linear model
+  model <- lm(formula, data = bussoCorrected)
+  
+  # Store the model in the results list
+  results[[i]] <- model
+  
+  # Extract adjusted R-squared and add it to the results data frame
+  adj_r_squared <- summary(model)$adj.r.squared
+  adj_r_squared_results <- rbind(adj_r_squared_results, data.frame(Model = i, Variables = formula_vars,
+                                                                   Adj_R_Squared = adj_r_squared))
+  # Extract significant variables (p < 0.05) and add to significant variables data frame
+  summary_model <- summary(model)
+  significant_vars <- summary_model$coefficients[summary_model$coefficients[, "Pr(>|t|)"] < 0.05, , drop = FALSE]
+  
+  if (nrow(significant_vars) > 0) {
+    # Remove the intercept if it's significant to avoid redundancy
+    significant_vars <- significant_vars[rownames(significant_vars) != "(Intercept)", , drop = FALSE]
+    for (var_name in rownames(significant_vars)) {
+      significant_vars_results <- rbind(significant_vars_results, 
+                                        data.frame(Model = i, Variable = var_name, P_Value =
+                                                     significant_vars[var_name, "Pr(>|t|)"]))
+      # Increment the significant count for each variable
+      if (var_name %in% names(significant_counts)) {
+        significant_counts[var_name] <- significant_counts[var_name] + 1
+      }
+    }
+  }
+}
+
+# Convert the significant counts to a data frame
+significant_counts_df <- data.frame(Variable = names(significant_counts), Significant_Count = significant_counts)
+
+# Save all results as CSVs
+write.csv(adj_r_squared_results, "adjusted_r_squared_results.csv", row.names = FALSE)
+write.csv(significant_vars_results, "significant_variables_results.csv", row.names = FALSE)
+write.csv(significant_counts_df, "significant_variable_counts.csv", row.names = FALSE)
+
+# Print all results data frames to check
+print(adj_r_squared_results)
+print(significant_vars_results)
+print(significant_counts_df)
+
+
+# Print summaries of all models
+#lapply(results, summary)
+
+```
+
+
+
+
+
+
+
+```{r}
+lm1 <- lm(bmi ~ TAG.48.1_FA16.1., bussoCorrected)
+lm1_summary <- summary(lm1)
+adj_r_squared1 <-lm1_summary$adj.r.squared
+```
+
+```{r}
+lm2 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4., bussoCorrected)
+lm2_summary <- summary(lm2)
+adj_r_squared2 <-lm2_summary$adj.r.squared
+```
+
+```{r}
+lm3 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0., bussoCorrected)
+lm3_summary <- summary(lm3)
+adj_r_squared3 <-lm3_summary$adj.r.squared
+```
+
+
+```{r}
+lm4 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1., bussoCorrected)
+lm4_summary <- summary(lm4)
+adj_r_squared4 <-lm4_summary$adj.r.squared
+```
+
+
+```{r}
+lm5 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3., bussoCorrected)
+lm5_summary <- summary(lm5)
+adj_r_squared5 <-lm5_summary$adj.r.squared
+```
+
+
+```{r}
+lm6 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1., bussoCorrected)
+lm6_summary <- summary(lm6)
+adj_r_squared6 <-lm6_summary$adj.r.squared
+```
+
+```{r}
+lm7 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0., bussoCorrected)
+lm7_summary <- summary(lm7)
+adj_r_squared7 <-lm7_summary$adj.r.squared
+```
+
+
+```{r}
+lm8 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0. + TAG.58.6_FA16.0., bussoCorrected)
+lm8_summary <- summary(lm8)
+adj_r_squared8 <-lm8_summary$adj.r.squared
+```
+
+
+```{r}
+lm9 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0. + TAG.58.6_FA16.0. + TAG.52.2_FA18.1., bussoCorrected)
+lm9_summary <- summary(lm9)
+adj_r_squared9 <-lm9_summary$adj.r.squared
+```
+
+```{r}
+lm10 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0. + TAG.58.6_FA16.0. + TAG.52.2_FA18.1. + PC.18.0_16.1., bussoCorrected)
+lm10_summary <- summary(lm10)
+adj_r_squared10 <-lm10_summary$adj.r.squared
+```
+
+```{r}
+rm(lm1, lm2, lm3, lm4, lm5, lm6,lm7, lm8, lm9, lm10, lm1_summary, lm2_summary, lm3_summary, lm4_summary, lm5_summary, lm6_summary,lm7_summary, lm8_summary, lm9_summary, lm10_summary, oplsR_bmi_new19, otherlipids19, otherlipids20)
+```
+
+
+```{r}
+lm11 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0. + TAG.58.6_FA16.0. + TAG.52.2_FA18.1. + PC.18.0_16.1. + LPI.16.1., bussoCorrected)
+lm11_summary <- summary(lm11)
+adj_r_squared11 <-lm11_summary$adj.r.squared
+```
+
+
+```{r}
+lm12 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0. + TAG.58.6_FA16.0. + TAG.52.2_FA18.1. + PC.18.0_16.1. + LPI.16.1. + TAG.54.5_FA18.0., bussoCorrected)
+lm12_summary <- summary(lm12)
+adj_r_squared12 <-lm12_summary$adj.r.squared
+```
+
+
+```{r}
+lm13 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0. + TAG.58.6_FA16.0. + TAG.52.2_FA18.1. + PC.18.0_16.1. + LPI.16.1. + TAG.54.5_FA18.0. + HCER.18.1., bussoCorrected)
+lm13_summary <- summary(lm13)
+adj_r_squared13 <-lm13_summary$adj.r.squared
+```
+
+
+```{r}
+lm14 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0. + TAG.58.6_FA16.0. + TAG.52.2_FA18.1. + PC.18.0_16.1. + LPI.16.1. + TAG.54.5_FA18.0. + HCER.18.1. + TAG.58.6_FA22.5., bussoCorrected)
+lm14_summary <- summary(lm14)
+adj_r_squared14 <-lm14_summary$adj.r.squared
+```
+
+
+```{r}
+lm15 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0. + TAG.58.6_FA16.0. + TAG.52.2_FA18.1. + PC.18.0_16.1. + LPI.16.1. + TAG.54.5_FA18.0. + HCER.18.1. + TAG.58.6_FA22.5. + TAG.56.5_FA18.1., bussoCorrected)
+lm15_summary <- summary(lm15)
+adj_r_squared15 <-lm15_summary$adj.r.squared
+```
+
+
+```{r}
+lm16 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0. + TAG.58.6_FA16.0. + TAG.52.2_FA18.1. + PC.18.0_16.1. + LPI.16.1. + TAG.54.5_FA18.0. + HCER.18.1. + TAG.58.6_FA22.5. + TAG.56.5_FA18.1. + TAG.58.8_FA20.3., bussoCorrected)
+lm16_summary <- summary(lm16)
+adj_r_squared16 <-lm16_summary$adj.r.squared
+```
+
+
+```{r}
+lm17 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0. + TAG.58.6_FA16.0. + TAG.52.2_FA18.1. + PC.18.0_16.1. + LPI.16.1. + TAG.54.5_FA18.0. + HCER.18.1. + TAG.58.6_FA22.5. + TAG.56.5_FA18.1. + TAG.58.8_FA20.3. + TAG.56.9_FA20.4., bussoCorrected)
+lm17_summary <- summary(lm17)
+adj_r_squared17 <-lm17_summary$adj.r.squared
+```
+
+
+
+```{r}
+lm18 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0. + TAG.58.6_FA16.0. + TAG.52.2_FA18.1. + PC.18.0_16.1. + LPI.16.1. + TAG.54.5_FA18.0. + HCER.18.1. + TAG.58.6_FA22.5. + TAG.56.5_FA18.1. + TAG.58.8_FA20.3. + TAG.56.9_FA20.4. + PC.18.0_20.3., bussoCorrected)
+lm18_summary <- summary(lm18)
+adj_r_squared18 <-lm18_summary$adj.r.squared
+```
+
+
+```{r}
+lm19 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0. + TAG.58.6_FA16.0. + TAG.52.2_FA18.1. + PC.18.0_16.1. + LPI.16.1. + TAG.54.5_FA18.0. + HCER.18.1. + TAG.58.6_FA22.5. + TAG.56.5_FA18.1. + TAG.58.8_FA20.3. + TAG.56.9_FA20.4. + PC.18.0_20.3. + PE.16.0_16.1., bussoCorrected)
+lm19_summary <- summary(lm19)
+adj_r_squared19 <-lm19_summary$adj.r.squared
+```
+
+
+```{r}
+lm20 <- lm(bmi ~ TAG.48.1_FA16.1. + TAG.54.4_FA20.4. + TAG.54.1_FA18.0. + DCER.20.1. + TAG.51.3_FA18.3. + TAG.42.1_FA18.1. + DCER.18.0. + TAG.58.6_FA16.0. + TAG.52.2_FA18.1. + PC.18.0_16.1. + LPI.16.1. + TAG.54.5_FA18.0. + HCER.18.1. + TAG.58.6_FA22.5. + TAG.56.5_FA18.1. + TAG.58.8_FA20.3. + TAG.56.9_FA20.4. + PC.18.0_20.3. + PE.16.0_16.1. + PC.18.0_18.3., bussoCorrected)
+lm20_summary <- summary(lm20)
+adj_r_squared20 <-lm20_summary$adj.r.squared
+```
+
+```{r}
+rm(lm11, lm11_summary, lm12, lm12_summary, lm13, lm13_summary, lm14, lm14_summary, lm15, lm15_summary, lm16, lm16_summary, lm17, lm17_summary, lm18, lm18_summary, lm19, lm19_summary, lm20, lm20_summary)
+```
+
+```{r}
+SELECT_20lipids <- c("TAG.48.1_FA16.1.", "TAG.54.4_FA20.4.", "TAG.54.1_FA18.0.", "DCER.20.1.", "TAG.51.3_FA18.3.", "TAG.42.1_FA18.1.", "DCER.18.0.", "TAG.58.6_FA16.0.", "TAG.52.2_FA18.1.", "PC.18.0_16.1.", "LPI.16.1.", "TAG.54.5_FA18.0.", "HCER.18.1.", "TAG.58.6_FA22.5.", "TAG.56.5_FA18.1.", "TAG.58.8_FA20.3.", "TAG.56.9_FA20.4.", "PC.18.0_20.3.", "PE.16.0_16.1.", "PC.18.0_18.3")
+```
+
+
+```{r}
+R2_df <- data.frame(iteration = seq(1, 20),
+                    R2 = c(adj_r_squared1, adj_r_squared2, adj_r_squared3, adj_r_squared4, adj_r_squared5, adj_r_squared6, adj_r_squared7, adj_r_squared8, adj_r_squared9, adj_r_squared10, adj_r_squared11, adj_r_squared12, adj_r_squared13, adj_r_squared14, adj_r_squared15, adj_r_squared16, adj_r_squared17, adj_r_squared18, adj_r_squared19, adj_r_squared20))
+
+write.csv(R2_df, file = "R2_iteration1_20.csv")
+```
+
+```{r}
+rm(dataset, df,busso, bussoLog, correlations19, correlations20, high_corr_vars_60, high_corr_vars_70, high_corr_vars_80, large_p1, mod, newMat19, X, adj_r_squared1, adj_r_squared10, adj_r_squared11, adj_r_squared12, adj_r_squared13, adj_r_squared14, adj_r_squared15, adj_r_squared16, adj_r_squared17, adj_r_squared9, adj_r_squared8, adj_r_squared7, adj_r_squared6, adj_r_squared5, adj_r_squared4, adj_r_squared3, adj_r_squared20, adj_r_squared2, adj_r_squared18, adj_r_squared19, DCER.18.0., DCER.20.1., HCER.18.1., high_corr_indices_60, high_corr_indicies_70, high_corr_indices_80, i, LPI.16.1., PC.18.0_16.1., PC.18.0_18.3., PC.18.0_20.3., PE.16.0_16.1., TAG.42.1_FA18.1., TAG.51.3_FA18.3., TAG.52.2_FA18.1., TAG.52.5_FA20.5., TAG.54.1_FA18.0., TAG.54.4_FA20.4., TAG.54.5_FA18.0., TAG.56.5_FA18.1., TAG.56.9_FA20.4., TAG.58.6_FA16.0., TAG.58.6_FA22.5., TAG.58.8_FA20.3., TAG48.1_FA16.1, threshold, var, variable_names, varList,Y, model_results_models_ctrl, results, rfe_ctrl_lm, rfe_ctrl_svm, rfe_ctrl_rf, cv_ctrl)
+```
+
+
